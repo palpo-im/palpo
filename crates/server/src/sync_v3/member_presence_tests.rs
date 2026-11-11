@@ -222,10 +222,10 @@ async fn member_presence() {
     // frame, while the actual sync must retain the published Bob membership.
     {
         use diesel::sql_types::{BigInt, Text};
-        use diesel_async::RunQueryDsl;
+        use horme::RunQueryDsl;
         let imported_sn = data::next_sn().await.unwrap();
         let imported_id = "$cached-import-after-live-join";
-        let mut connection = data::connect().await.unwrap();
+        let mut connection = data::connect();
         diesel::sql_query("INSERT INTO events
             (id,sn,ty,room_id,depth,topological_ordering,stream_ordering,origin_server_ts,contains_url,is_outlier)
             VALUES ($1,$2,'m.room.message',$3,1,1,$2,0,false,true)")
@@ -591,7 +591,8 @@ fn http_delayed_membership_promotion_uses_publication_order() {
 
 async fn delayed_member_publication() {
     use diesel::prelude::*;
-    use diesel_async::{AsyncConnection, RunQueryDsl, SimpleAsyncConnection};
+    use diesel_async::SimpleAsyncConnection;
+    use horme::RunQueryDsl;
     crate::test_database::init();
     config::CONFIG
         .set(
@@ -654,7 +655,7 @@ async fn delayed_member_publication() {
     let mut backfilled = cached.clone();
     backfilled.is_backfill = true;
     for invalid in [&soft_failed, &rejected, &backfilled] {
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::connect();
         let result = conn
             .transaction::<_, crate::AppError, _>(async |conn| {
                 crate::event::sticky::publish_live_frame_with_conn(conn, invalid, before_frame)
@@ -682,7 +683,7 @@ async fn delayed_member_publication() {
             data::schema::event_points::live_published_sn,
             data::schema::event_points::live_published_frame_id,
         ))
-        .first::<(Option<i64>, Option<i64>)>(&mut data::connect().await.unwrap())
+        .first::<(Option<i64>, Option<i64>)>(&mut crate::data::db())
         .await
         .unwrap();
     assert_eq!(unpublished, (None, None));
@@ -725,7 +726,7 @@ async fn delayed_member_publication() {
     // Pause after allocation of the publication cursor but before commit.
     // With the original cached identity guard gone, the sync watermark lock
     // itself must prevent a reader from advancing past this uncommitted write.
-    let mut blocker = data::connect().await.unwrap();
+    let mut blocker = data::checkout().await.unwrap();
     blocker
         .batch_execute(
             "CREATE TABLE publication_test_target(event_id TEXT PRIMARY KEY);
@@ -786,7 +787,7 @@ async fn delayed_member_publication() {
         data::schema::events::table
             .find(&*cached.event_id)
             .select(data::schema::events::is_outlier)
-            .first::<bool>(&mut data::connect().await.unwrap())
+            .first::<bool>(&mut crate::data::db())
             .await
             .unwrap()
     );
@@ -918,7 +919,7 @@ async fn delayed_member_publication() {
             data::schema::event_points::live_published_sn,
             data::schema::event_points::live_published_frame_id,
         ))
-        .first::<(Option<i64>, Option<i64>)>(&mut data::connect().await.unwrap())
+        .first::<(Option<i64>, Option<i64>)>(&mut crate::data::db())
         .await
         .unwrap();
     assert_eq!(history_publication, (None, None));
@@ -981,7 +982,7 @@ async fn delayed_member_publication() {
     assert!(generic.contains_key(&history.event_sn));
     diesel::sql_query("INSERT INTO event_backward_extremities(room_id,event_id) VALUES ($1,'$missing-history-frontier')")
         .bind::<diesel::sql_types::Text, _>(room.as_str())
-        .execute(&mut data::connect().await.unwrap()).await.unwrap();
+        .execute(&mut crate::data::db()).await.unwrap();
     *room::timeline::BACKFILL_RESULT_FOR_TEST.lock().unwrap() =
         Some(room::timeline::BackfillResultForTest {
             room_id: room.clone(),
@@ -1054,7 +1055,7 @@ async fn delayed_member_publication() {
     );
     diesel::sql_query("DELETE FROM event_backward_extremities WHERE room_id=$1 AND event_id='$missing-history-frontier'")
         .bind::<diesel::sql_types::Text,_>(room.as_str())
-        .execute(&mut data::connect().await.unwrap()).await.unwrap();
+        .execute(&mut crate::data::db()).await.unwrap();
     let history_upper = BatchToken::new_publication(data::curr_sn().await.unwrap() + 1);
     let mut from = history_upper.to_string();
     let mut history_seen = Vec::new();
@@ -1440,7 +1441,7 @@ async fn late_published_timeline(
     history_id: &crate::core::EventId,
 ) {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     let created = request(
         TestClient::post("http://localhost/_matrix/client/v3/createRoom")
@@ -1528,7 +1529,7 @@ async fn late_published_timeline(
         let publication = data::schema::event_points::table
             .find(&*cached.event_id)
             .select(data::schema::event_points::live_published_sn)
-            .first::<Option<i64>>(&mut data::connect().await.unwrap())
+            .first::<Option<i64>>(&mut crate::data::db())
             .await
             .unwrap()
             .unwrap();
@@ -1778,7 +1779,7 @@ async fn late_published_timeline(
     let original_json = data::schema::event_datas::table
         .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str()))
         .select(data::schema::event_datas::json_data)
-        .first::<Value>(&mut data::connect().await.unwrap())
+        .first::<Value>(&mut crate::data::db())
         .await
         .unwrap();
     diesel::update(
@@ -1786,7 +1787,7 @@ async fn late_published_timeline(
             .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str())),
     )
     .set(data::schema::event_datas::json_data.eq(json!(["invalid stored pdu"])))
-    .execute(&mut data::connect().await.unwrap())
+    .execute(&mut crate::data::db())
     .await
     .unwrap();
     assert!(
@@ -1818,7 +1819,7 @@ async fn late_published_timeline(
             .filter(data::schema::event_datas::event_id.eq(pending[0].0.event_id.as_str())),
     )
     .set(data::schema::event_datas::json_data.eq(original_json))
-    .execute(&mut data::connect().await.unwrap())
+    .execute(&mut crate::data::db())
     .await
     .unwrap();
     diesel::insert_into(data::schema::timeline_gaps::table)
@@ -1827,7 +1828,7 @@ async fn late_published_timeline(
             data::schema::timeline_gaps::event_id.eq(pending[1].0.event_id.as_str()),
             data::schema::timeline_gaps::event_sn.eq(pending[1].0.event_sn),
         ))
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     let newest_gap = super::load_timeline(
@@ -1877,7 +1878,7 @@ fn timeline_ids<'a>(sync: &'a Value, room: &crate::core::RoomId) -> Vec<&'a str>
 }
 
 async fn wait_for_publication_lock(class_id: i64, key: i64, sub_id: i16, mode: &str) {
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
     #[derive(diesel::QueryableByName)]
     struct Waiting {
         #[diesel(sql_type=diesel::sql_types::Bool)]
@@ -1894,7 +1895,7 @@ async fn wait_for_publication_lock(class_id: i64, key: i64, sub_id: i16, mode: &
         .bind::<diesel::sql_types::BigInt, _>(key)
         .bind::<diesel::sql_types::SmallInt, _>(sub_id)
         .bind::<diesel::sql_types::Text, _>(mode)
-        .get_result::<Waiting>(&mut data::connect().await.unwrap())
+        .get_result::<Waiting>(&mut crate::data::db())
         .await
         .unwrap();
         if waiting.found {

@@ -73,6 +73,15 @@ impl DataError {
     }
 }
 
+impl From<horme::Error> for DataError {
+    fn from(error: horme::Error) -> Self {
+        match error {
+            horme::Error::Query(error) => Self::Diesel(error),
+            error => Self::Pool(crate::PoolError::Acquire(error)),
+        }
+    }
+}
+
 fn expose_diesel_not_found(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::DELETE)
 }
@@ -173,6 +182,7 @@ mod tests {
 
     #[test]
     fn only_missing_resources_are_classified_as_not_found() {
+        assert!(DataError::from(horme::Error::Query(DieselError::NotFound)).is_not_found());
         assert!(DataError::Diesel(DieselError::NotFound).is_not_found());
         assert!(DataError::Matrix(MatrixError::not_found("missing")).is_not_found());
         assert!(

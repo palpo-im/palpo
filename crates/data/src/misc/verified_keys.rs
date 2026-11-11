@@ -1,5 +1,5 @@
 use diesel::sql_types::{Array, BigInt, Bool, Integer, Jsonb, Nullable, Text};
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::RunQueryDsl;
 
 use super::*;
 
@@ -21,7 +21,7 @@ pub struct VerifiedKeyDocument {
 
 pub async fn verified_key_documents(server: &ServerName) -> DataResult<Vec<VerifiedKeyDocument>> {
     Ok(diesel::sql_query("SELECT key_data,document_sha256,source,source_server,validation_version,validated_at FROM verified_server_key_documents WHERE server_id=$1 ORDER BY validated_at DESC,id DESC")
-        .bind::<Text,_>(server.as_str()).load(&mut connect().await?).await?)
+        .bind::<Text,_>(server.as_str()).load(&mut crate::db()).await?)
 }
 
 const FIELDS: &str =
@@ -34,7 +34,7 @@ pub async fn latest_verified_key_document(
     notaries: &[String],
 ) -> DataResult<Vec<VerifiedKeyDocument>> {
     Ok(diesel::sql_query(format!("SELECT {FIELDS} FROM verified_server_key_documents d WHERE d.server_id=$1 AND {TRUST} ORDER BY d.validated_at DESC,d.id DESC LIMIT 1"))
-        .bind::<Text,_>(server.as_str()).bind::<Array<Text>,_>(notaries).load(&mut connect().await?).await?)
+        .bind::<Text,_>(server.as_str()).bind::<Array<Text>,_>(notaries).load(&mut crate::db()).await?)
 }
 
 pub async fn verified_key_retirement(
@@ -48,7 +48,7 @@ pub async fn verified_key_retirement(
         expiry: Option<i64>,
     }
     Ok(diesel::sql_query(format!("SELECT min(LEAST(v.valid_until::numeric,d.validated_at::numeric+604800000))::bigint AS expiry FROM verified_server_key_versions v JOIN verified_server_key_documents d ON d.id=v.document_id AND d.server_id=v.server_id WHERE v.server_id=$1 AND v.key_id=$3 AND v.retired AND {TRUST}"))
-        .bind::<Text,_>(server.as_str()).bind::<Array<Text>,_>(notaries).bind::<Text,_>(id).get_result::<Retirement>(&mut connect().await?).await?.expiry)
+        .bind::<Text,_>(server.as_str()).bind::<Array<Text>,_>(notaries).bind::<Text,_>(id).get_result::<Retirement>(&mut crate::db()).await?.expiry)
 }
 
 /// A fixed online budget. Historical rows remain available to offline tooling.
@@ -63,7 +63,7 @@ pub async fn verified_event_key_documents(
 ) -> DataResult<Vec<VerifiedKeyDocument>> {
     Ok(diesel::sql_query(format!("SELECT {FIELDS} FROM verified_server_key_versions v JOIN verified_server_key_documents d ON d.id=v.document_id AND d.server_id=v.server_id WHERE v.server_id=$1 AND v.key_id=$3 AND {TRUST} AND (NOT $5 OR ((CASE WHEN v.retired THEN v.valid_until>$4 ELSE v.valid_until>=$4 END) AND d.validated_at::numeric+604800000 >= $4::numeric)) ORDER BY d.validated_at DESC,d.id DESC LIMIT 8"))
         .bind::<Text,_>(server.as_str()).bind::<Array<Text>,_>(notaries).bind::<Text,_>(id).bind::<BigInt,_>(timestamp).bind::<Bool,_>(enforce)
-        .load(&mut connect().await?).await?)
+        .load(&mut crate::db()).await?)
 }
 
 /// Preserve signed bodies separately from the legacy merged key index.
@@ -79,7 +79,7 @@ pub async fn store_verified_key_document(
         #[diesel(sql_type=BigInt)]
         id: i64,
     }
-    connect().await?.transaction::<_,crate::DataError,_>(async |conn| {
+    crate::db().transaction::<_,crate::DataError,_>(async |conn| {
     let document=diesel::sql_query("INSERT INTO verified_server_key_documents(server_id,document_sha256,key_data,source,source_server,validation_version,validated_at) VALUES($1,$2,$3,$4,$5,1,$6) ON CONFLICT(server_id,document_sha256) DO UPDATE SET validated_at=EXCLUDED.validated_at,source=EXCLUDED.source,source_server=EXCLUDED.source_server,validation_version=1 RETURNING id")
         .bind::<Text,_>(server.as_str()).bind::<Text,_>(digest).bind::<Jsonb,_>(raw)
         .bind::<Text,_>(source).bind::<Text,_>(source_server.as_str()).bind::<BigInt,_>(UnixMillis::now().0.min(i64::MAX as u64) as i64)

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::RunQueryDsl;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::RetryTransientMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
@@ -283,7 +283,7 @@ pub async fn send_pdu_room(
         .filter(room_joined_servers::server_id.ne(&config::get().server_name))
         // .filter(room_joined_servers::server_id.ne_all(skip_servers))
         .select(room_joined_servers::server_id)
-        .load::<OwnedServerName>(&mut connect().await?)
+        .load::<OwnedServerName>(&mut crate::data::db())
         .await?;
     let mut servers = servers
         .into_iter()
@@ -339,7 +339,7 @@ pub async fn send_edu_room(room_id: &RoomId, edu: &Edu) -> AppResult<()> {
         .filter(room_joined_servers::room_id.eq(room_id))
         .filter(room_joined_servers::server_id.ne(&config::get().server_name))
         .select(room_joined_servers::server_id)
-        .load::<OwnedServerName>(&mut connect().await?)
+        .load::<OwnedServerName>(&mut crate::data::db())
         .await?;
     send_edu_servers(servers.into_iter(), edu).await
 }
@@ -417,7 +417,7 @@ pub async fn wake_servers<S: Iterator<Item = OwnedServerName>>(
             // An in-flight Flush covers only the snapshot already selected. A change
             // arriving meanwhile needs its own queued row for the next transaction.
             .filter(outgoing_requests::state.ne("pending"));
-        if !diesel_exists!(flush_exists, &mut connect().await?)? {
+        if !diesel_exists!(flush_exists, &mut crate::data::db())? {
             queue_request(&outgoing_kind, &SendingEventType::Flush).await?;
         }
         notify(outgoing_kind)?;
@@ -925,7 +925,7 @@ async fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> 
                     .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
                     .filter(outgoing_requests::appservice_id.eq(appservice_id)),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
         }
         OutgoingKind::Normal(server_id) => {
@@ -934,7 +934,7 @@ async fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> 
                     .filter(outgoing_requests::kind.eq(outgoing_kind.name()))
                     .filter(outgoing_requests::server_id.eq(server_id.as_str())),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
         }
         OutgoingKind::Push(user_id, pushkey) => {
@@ -944,7 +944,7 @@ async fn delete_all_requests_for(outgoing_kind: &OutgoingKind) -> AppResult<()> 
                     .filter(outgoing_requests::user_id.eq(user_id.as_str()))
                     .filter(outgoing_requests::pushkey.eq(pushkey)),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
         }
     }
@@ -959,7 +959,6 @@ async fn queue_requests(requests: &[(&OutgoingKind, SendingEventType)]) -> AppRe
     // One call is one durable fanout: no destination becomes visible until all
     // chunks commit. Bound each statement well below PostgreSQL's bind limit.
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             let mut ids: Vec<i64> = Vec::with_capacity(requests.len());
             for chunk in requests.chunks(512) {
@@ -1045,7 +1044,7 @@ async fn active_requests_for(
     }
 
     let list = query
-        .load::<DbOutgoingRequest>(&mut connect().await?)
+        .load::<DbOutgoingRequest>(&mut crate::data::db())
         .await?
         .into_iter()
         .map(|r| {
@@ -1084,7 +1083,7 @@ async fn queued_kinds() -> AppResult<Vec<OutgoingKind>> {
             outgoing_requests::server_id,
         ))
         .distinct()
-        .load::<Row>(&mut connect().await?)
+        .load::<Row>(&mut crate::data::db())
         .await?;
     Ok(rows
         .into_iter()
@@ -1132,7 +1131,7 @@ async fn queued_requests(
     }
 
     Ok(query
-        .load::<DbOutgoingRequest>(&mut connect().await?)
+        .load::<DbOutgoingRequest>(&mut crate::data::db())
         .await?
         .into_iter()
         .map(|r| {
@@ -1154,9 +1153,7 @@ async fn queued_requests(
 async fn claim_queued_requests(
     events: &[(i64, SendingEventType)],
 ) -> AppResult<Vec<SendingEventType>> {
-    let mut connection = guard::TransactionConnection::new(connect().await?);
-    let result = connection
-        .connection()
+    connect()
         .transaction::<_, AppError, _>(async |conn| {
             let mut claimed = Vec::with_capacity(events.len());
             for (id, event) in events {
@@ -1183,9 +1180,7 @@ async fn claim_queued_requests(
 
             Ok(claimed)
         })
-        .await;
-    connection.mark_finished();
-    result
+        .await
 }
 
 /// This does not return a full `Pdu` it is only to satisfy palpo's types.
@@ -1310,7 +1305,7 @@ mod tests {
         // too, and a retry must not create duplicate fanout destinations.
         let failure = OutgoingKind::Normal("fail.example".try_into().unwrap());
         references.push((&failure, SendingEventType::Flush));
-        let mut connection = connect().await.unwrap();
+        let mut connection = crate::data::connect();
         diesel::sql_query(
             "CREATE FUNCTION reject_review_fanout() RETURNS trigger LANGUAGE plpgsql AS $$
              BEGIN IF NEW.server_id = 'fail.example' THEN RAISE EXCEPTION 'injected fanout failure'; END IF;

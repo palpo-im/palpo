@@ -219,13 +219,13 @@ pub async fn get_known_user(user_id: PathParam<OwnedUserId>) -> JsonResult<Known
 #[cfg(test)]
 mod tests {
     use diesel::sql_types::{BigInt, Text};
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
 
     use crate::core::identifiers::*;
     use crate::core::{UnixMillis, user_id};
-    use crate::data::{self, connect};
+    use crate::data::{self};
 
     async fn fixture_account(user_id: &UserId, admin: bool, token: Option<&str>) {
         data::user::create_user(&data::user::NewDbUser {
@@ -258,7 +258,7 @@ mod tests {
     ) {
         let event_id = format!("$known-{event_sn}");
         let server = user_id.split_once(':').unwrap().1;
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         diesel::sql_query(
             "INSERT INTO room_users (event_id, event_sn, room_id, user_id, user_server_id, \
                 sender_id, membership, created_at) \

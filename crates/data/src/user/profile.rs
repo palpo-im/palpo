@@ -1,8 +1,8 @@
 use diesel::prelude::*;
-use diesel::result::Error as DieselError;
 use diesel::sql_types::{Jsonb, Text};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
 use futures_util::future::BoxFuture;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonObject, JsonValue};
@@ -50,7 +50,7 @@ async fn ensure_profile_size_on_conn(
     ensure_profile_size(&profile)
 }
 
-async fn lock_profile_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
+async fn lock_profile_stream(conn: &mut AsyncPgConnection) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock($1)")
         .bind::<diesel::sql_types::BigInt, _>(PROFILE_STREAM_LOCK_ID)
         .execute(conn)
@@ -58,7 +58,7 @@ async fn lock_profile_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselE
     Ok(())
 }
 
-async fn lock_profile_stream_shared(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
+async fn lock_profile_stream_shared(conn: &mut AsyncPgConnection) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
         .bind::<diesel::sql_types::BigInt, _>(PROFILE_STREAM_LOCK_ID)
         .execute(conn)
@@ -79,7 +79,6 @@ pub async fn curr_sn_after_presence_profile_and_inbox_writes(
     device_id: &DeviceId,
 ) -> DataResult<Seqnum> {
     connect()
-        .await?
         .transaction::<_, DataError, _>(async |conn| {
             super::presence::lock_presence_stream_shared(conn).await?;
             // Readers may run together, but an exclusive writer cannot publish a stream
@@ -129,7 +128,7 @@ pub async fn create_profile(profile: &NewDbProfile) -> DataResult<()> {
         // Both global (partial index) and room profiles can be discovered concurrently.
         // Creation must preserve the winner, never overwrite an existing profile.
         .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -142,7 +141,6 @@ pub async fn create_profile(profile: &NewDbProfile) -> DataResult<()> {
 /// `(user_id, room_id)` unique constraint.
 pub async fn ensure_profile_exists(user_id: &UserId) -> DataResult<()> {
     connect()
-        .await?
         .transaction::<_, DataError, _>(async move |conn| {
             users::table
                 .filter(users::id.eq(user_id))
@@ -187,14 +185,14 @@ pub async fn get_profile(
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))
             .filter(user_profiles::room_id.eq(room_id))
-            .first::<DbProfile>(&mut connect().await?)
+            .first::<DbProfile>(&mut crate::db())
             .await
             .optional()?
     } else {
         user_profiles::table
             .filter(user_profiles::user_id.eq(user_id.as_str()))
             .filter(user_profiles::room_id.is_null())
-            .first::<DbProfile>(&mut connect().await?)
+            .first::<DbProfile>(&mut crate::db())
             .await
             .optional()?
     };
@@ -209,7 +207,7 @@ pub async fn get_global_profiles(user_ids: &[OwnedUserId]) -> DataResult<Vec<DbP
     user_profiles::table
         .filter(user_profiles::user_id.eq_any(user_ids))
         .filter(user_profiles::room_id.is_null())
-        .load::<DbProfile>(&mut connect().await?)
+        .load::<DbProfile>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -219,7 +217,7 @@ pub async fn profile_fields(user_id: &UserId) -> DataResult<JsonObject> {
         .filter(user_profiles::user_id.eq(user_id))
         .filter(user_profiles::room_id.is_null())
         .select(user_profiles::fields)
-        .first::<JsonValue>(&mut connect().await?)
+        .first::<JsonValue>(&mut crate::db())
         .await
         .optional()?;
 
@@ -270,7 +268,6 @@ pub async fn set_profile_field(user_id: &UserId, field: &str, value: JsonValue) 
     with_profile_repair(user_id, || {
         Box::pin(async move {
             connect()
-                .await?
                 .transaction::<_, DataError, _>(async |conn| {
                     lock_profile_stream(conn).await?;
                     let updated = diesel::sql_query(
@@ -301,7 +298,6 @@ pub async fn delete_profile_field(user_id: &UserId, field: &str) -> DataResult<(
     with_profile_repair(user_id, || {
         Box::pin(async move {
             connect()
-                .await?
                 .transaction::<_, DataError, _>(async |conn| {
                     lock_profile_stream(conn).await?;
                     let updated = diesel::sql_query(
@@ -371,7 +367,6 @@ pub async fn set_global_display_name(
     with_profile_repair(user_id, || {
         Box::pin(async move {
             connect()
-                .await?
                 .transaction::<_, DataError, _>(async |conn| {
                     lock_profile_stream(conn).await?;
                     let updated = diesel::update(
@@ -408,7 +403,6 @@ pub async fn set_global_avatar_url(
     with_profile_repair(user_id, || {
         Box::pin(async move {
             connect()
-                .await?
                 .transaction::<_, DataError, _>(async |conn| {
                     lock_profile_stream(conn).await?;
                     let updated = diesel::update(
@@ -446,7 +440,6 @@ pub async fn set_global_avatar_and_blurhash(
     with_profile_repair(user_id, || {
         Box::pin(async move {
             connect()
-                .await?
                 .transaction::<_, DataError, _>(async |conn| {
                     lock_profile_stream(conn).await?;
                     let updated = diesel::update(
@@ -488,7 +481,6 @@ pub async fn set_global_avatar_and_blurhash(
 
 pub async fn delete_global_profile(user_id: &UserId) -> DataResult<()> {
     connect()
-        .await?
         .transaction::<_, DataError, _>(async |conn| {
             lock_profile_stream(conn).await?;
             let profile = user_profiles::table
@@ -558,7 +550,7 @@ pub async fn profile_changes_since(
             user_profile_changes::value,
             user_profile_changes::removed,
         ))
-        .load::<(OwnedUserId, String, Option<JsonValue>, bool)>(&mut connect().await?)
+        .load::<(OwnedUserId, String, Option<JsonValue>, bool)>(&mut crate::db())
         .await?;
 
     Ok(rows

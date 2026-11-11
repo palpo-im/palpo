@@ -1,7 +1,8 @@
 //! Durable per-client social presence. All publication uses the existing presence stream lock.
 use diesel::sql_types::{BigInt, Jsonb, Nullable, Text};
 use diesel::{QueryableByName, sql_query};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::RunQueryDsl;
 use serde_json::Value;
 
 use crate::core::presence::revised::{self, Persistent, State, Status};
@@ -57,7 +58,7 @@ pub async fn touch(user: &UserId, client: ClientId<'_>, state: &str) -> AppResul
         .ok_or_else(|| MatrixError::invalid_param("Unknown presence state"))?;
     let expires = client.expires_at(UnixMillis::now().0 as i64);
     let client = client.key();
-    let mut conn = data::connect().await?;
+    let mut conn = crate::data::db();
     let changed = conn.transaction::<_, crate::AppError, _>(async |conn| {
         data::user::lock_presence_stream(conn).await?;
         sql_query("INSERT INTO revised_presence_clients (user_id,client_id,state,expires_at) VALUES ($1,$2,$3,$4) ON CONFLICT (user_id,client_id) DO UPDATE SET state=EXCLUDED.state,expires_at=EXCLUDED.expires_at")
@@ -76,7 +77,7 @@ pub async fn refresh(user: &UserId) -> AppResult<()> {
     if !crate::config::get().presence.allow_local {
         return Ok(());
     }
-    let mut conn = data::connect().await?;
+    let mut conn = crate::data::db();
     let changed = conn
         .transaction::<_, crate::AppError, _>(async |conn| {
             data::user::lock_presence_stream(conn).await?;
@@ -95,7 +96,7 @@ pub async fn legacy_message(user: &UserId, message: String) -> AppResult<()> {
     for _ in 0..8 {
         let rows = sql_query("SELECT json_data::jsonb AS value FROM user_datas WHERE user_id=$1 AND room_id IS NULL AND data_type=$2 AND NOT is_deleted ORDER BY id DESC LIMIT 1")
             .bind::<Text,_>(user.as_str()).bind::<Text,_>(revised::PERSISTENT)
-            .load::<JsonRow>(&mut data::connect().await?).await?;
+            .load::<JsonRow>(&mut crate::data::db()).await?;
         let original = rows.into_iter().next().map(|row| row.value);
         let mut updated = original.clone().unwrap_or_else(|| serde_json::json!({}));
         serde_json::from_value::<Persistent>(updated.clone())?;
@@ -178,7 +179,7 @@ pub async fn incoming(
             ..Default::default()
         },
     };
-    let mut conn = data::connect().await?;
+    let mut conn = crate::data::db();
     conn.transaction::<_, crate::AppError, _>(async |conn| {
         data::user::lock_presence_stream(conn).await?;
         publish(conn, user, state, &status).await.map(|_| ())
@@ -189,7 +190,7 @@ pub async fn incoming(
 pub async fn project(user: &UserId, value: &mut Value, revised_states: bool) -> AppResult<()> {
     let rows = sql_query("SELECT revised_status AS value FROM user_presences WHERE user_id=$1")
         .bind::<Text, _>(user.as_str())
-        .load::<JsonRow>(&mut data::connect().await?)
+        .load::<JsonRow>(&mut crate::data::db())
         .await?;
     let status: Status = if let Some(status) = value.get(revised::STATUS) {
         serde_json::from_value(status.clone())?
@@ -212,7 +213,7 @@ pub async fn project(user: &UserId, value: &mut Value, revised_states: bool) -> 
     )
     .unwrap_or(State::Offline);
     let outages = sql_query("SELECT destination AS user_id FROM revised_presence_outages WHERE destination=$1 AND notified")
-        .bind::<Text,_>(format!("remote:{}", user.server_name())).load::<UserRow>(&mut data::connect().await?).await?;
+        .bind::<Text,_>(format!("remote:{}", user.server_name())).load::<UserRow>(&mut crate::data::db()).await?;
     if !outages.is_empty() {
         state = State::Offline;
     }
@@ -242,7 +243,7 @@ pub fn start() {
 
 async fn recover() -> AppResult<()> {
     let users = sql_query("SELECT DISTINCT user_id FROM revised_presence_clients UNION SELECT DISTINCT user_id FROM user_datas WHERE room_id IS NULL AND data_type=$1 AND NOT is_deleted UNION SELECT user_id FROM user_presences WHERE right(user_id,length($2)+1)=':'||$2")
-        .bind::<Text,_>(revised::PERSISTENT).bind::<Text,_>(crate::config::server_name().as_str()).load::<UserRow>(&mut data::connect().await?).await?;
+        .bind::<Text,_>(revised::PERSISTENT).bind::<Text,_>(crate::config::server_name().as_str()).load::<UserRow>(&mut crate::data::db()).await?;
     for user in users {
         refresh(&UserId::parse(user.user_id)?).await?;
     }
@@ -253,14 +254,14 @@ async fn expire() -> AppResult<()> {
     let users =
         sql_query("SELECT DISTINCT user_id FROM revised_presence_clients WHERE expires_at <= $1")
             .bind::<BigInt, _>(UnixMillis::now().0 as i64)
-            .load::<UserRow>(&mut data::connect().await?)
+            .load::<UserRow>(&mut crate::data::db())
             .await?;
     for row in users {
         let user = UserId::parse(&row.user_id)?;
         refresh(&user).await?;
     }
     let outages = sql_query("SELECT destination AS user_id FROM revised_presence_outages WHERE NOT notified AND failed_at <= $1")
-        .bind::<BigInt,_>(UnixMillis::now().0 as i64 - 300_000).load::<UserRow>(&mut data::connect().await?).await?;
+        .bind::<BigInt,_>(UnixMillis::now().0 as i64 - 300_000).load::<UserRow>(&mut crate::data::db()).await?;
     for outage in outages {
         publish_outage(&outage.user_id, false).await?;
     }
@@ -286,7 +287,7 @@ pub async fn delivery(kind: &crate::sending::OutgoingKind, success: bool) -> App
         OutgoingKind::Appservice(id) => format!("as:{id}"),
         _ => return Ok(()),
     };
-    let mut conn = data::connect().await?;
+    let mut conn = crate::data::db();
     if success {
         publish_outage(&destination, true).await?;
     } else {
@@ -297,7 +298,7 @@ pub async fn delivery(kind: &crate::sending::OutgoingKind, success: bool) -> App
 }
 
 async fn publish_outage(destination: &str, recovered: bool) -> AppResult<()> {
-    let mut conn = data::connect().await?;
+    let mut conn = crate::data::db();
     if let Some(server) = destination.strip_prefix("remote:") {
         let changed = conn.transaction::<_, crate::AppError, _>(async |conn| {
             data::user::lock_presence_stream(conn).await?;
@@ -388,7 +389,7 @@ mod tests {
             })).unwrap())
             .unwrap();
         let user = UserId::parse("@disabled:example.org").unwrap();
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::connect();
         sql_query("INSERT INTO revised_presence_clients (user_id,client_id,state,expires_at) VALUES ($1,'as:bridge',$2,NULL)")
             .bind::<Text, _>(user.as_str()).bind::<Text, _>(State::Active.as_str())
             .execute(&mut conn).await.unwrap();
@@ -428,7 +429,7 @@ mod tests {
             )
             .unwrap();
         let user = UserId::parse("@presence:example.org").unwrap();
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::checkout().await.unwrap();
         sql_query("INSERT INTO revised_presence_clients (user_id,client_id,state,expires_at) VALUES ($1,'one',$2,NULL),($1,'two',$3,NULL)")
             .bind::<Text,_>(user.as_str()).bind::<Text,_>(State::Active.as_str()).bind::<Text,_>(State::Busy.as_str())
             .execute(&mut conn).await.unwrap();
@@ -442,7 +443,7 @@ mod tests {
         data::user::set_data(&user, None, revised::PERSISTENT, json!({"state_override":State::Idle.as_str(),"status":{"msg":"hello","example.icon":"star"}})).await.unwrap();
         recompute(&mut conn, &user).await.unwrap();
         drop(conn); // Reopen the connection: no in-memory state is needed for reconstruction.
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::checkout().await.unwrap();
         recompute(&mut conn, &user).await.unwrap();
         let state = sql_query("SELECT state FROM user_presences WHERE user_id=$1")
             .bind::<Text, _>(user.as_str())

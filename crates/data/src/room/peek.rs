@@ -7,12 +7,12 @@
 //!   `renew_at`.
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = room_peeking_servers)]
@@ -64,7 +64,7 @@ pub async fn upsert_peeking_server(
         ))
         .do_update()
         .set(room_peeking_servers::renew_at.eq(renew_at))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -81,7 +81,7 @@ pub async fn remove_peeking_server(
             .filter(room_peeking_servers::server_id.eq(server))
             .filter(room_peeking_servers::peek_id.eq(peek_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -96,7 +96,7 @@ pub async fn active_peeking_servers(
         .filter(room_peeking_servers::room_id.eq(room_id))
         .filter(room_peeking_servers::renew_at.gt(now_ms))
         .select(room_peeking_servers::server_id)
-        .load::<OwnedServerName>(&mut connect().await?)
+        .load::<OwnedServerName>(&mut crate::db())
         .await?;
     servers.sort_unstable();
     servers.dedup();
@@ -109,7 +109,7 @@ pub async fn purge_expired_peeking_servers(now_ms: i64) -> DataResult<usize> {
     let removed = diesel::delete(
         room_peeking_servers::table.filter(room_peeking_servers::renew_at.le(now_ms)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(removed)
 }
@@ -141,7 +141,7 @@ pub async fn upsert_peek(
             room_peeks::target_server.eq(target_server),
             room_peeks::renew_at.eq(renew_at),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -150,7 +150,7 @@ pub async fn upsert_peek(
 pub async fn get_peek(room_id: &RoomId) -> DataResult<Option<DbRoomPeek>> {
     let peek = room_peeks::table
         .filter(room_peeks::room_id.eq(room_id))
-        .first::<DbRoomPeek>(&mut connect().await?)
+        .first::<DbRoomPeek>(&mut crate::db())
         .await
         .optional()?;
     Ok(peek)
@@ -164,7 +164,7 @@ pub async fn is_peeked(room_id: &RoomId) -> DataResult<bool> {
 /// Drop our outbound peek on a room.
 pub async fn remove_peek(room_id: &RoomId) -> DataResult<()> {
     diesel::delete(room_peeks::table.filter(room_peeks::room_id.eq(room_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -174,7 +174,7 @@ pub async fn remove_peek(room_id: &RoomId) -> DataResult<()> {
 pub async fn peeks_due_for_renewal(now_ms: i64) -> DataResult<Vec<DbRoomPeek>> {
     let peeks = room_peeks::table
         .filter(room_peeks::renew_at.le(now_ms))
-        .load::<DbRoomPeek>(&mut connect().await?)
+        .load::<DbRoomPeek>(&mut crate::db())
         .await?;
     Ok(peeks)
 }
@@ -183,7 +183,7 @@ pub async fn peeks_due_for_renewal(now_ms: i64) -> DataResult<Vec<DbRoomPeek>> {
 pub async fn peeked_room_ids() -> DataResult<Vec<OwnedRoomId>> {
     let rooms = room_peeks::table
         .select(room_peeks::room_id)
-        .load::<OwnedRoomId>(&mut connect().await?)
+        .load::<OwnedRoomId>(&mut crate::db())
         .await?;
     Ok(rooms)
 }
@@ -208,7 +208,7 @@ pub async fn add_user_peek(
             user_peeks::created_at.eq(now),
         ))
         .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -225,7 +225,7 @@ pub async fn remove_user_peek(
             .filter(user_peeks::device_id.eq(device_id))
             .filter(user_peeks::room_id.eq(room_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -239,7 +239,7 @@ pub async fn user_peeked_rooms(
         .filter(user_peeks::user_id.eq(user_id))
         .filter(user_peeks::device_id.eq(device_id))
         .select(user_peeks::room_id)
-        .load::<OwnedRoomId>(&mut connect().await?)
+        .load::<OwnedRoomId>(&mut crate::db())
         .await?;
     Ok(rooms)
 }
@@ -248,7 +248,7 @@ pub async fn user_peeked_rooms(
 /// peek is permanently torn down, so sync stops surfacing a dead peek).
 pub async fn remove_room_user_peeks(room_id: &RoomId) -> DataResult<()> {
     diesel::delete(user_peeks::table.filter(user_peeks::room_id.eq(room_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -259,7 +259,7 @@ pub async fn room_peeker_count(room_id: &RoomId) -> DataResult<i64> {
     let count: i64 = user_peeks::table
         .filter(user_peeks::room_id.eq(room_id))
         .count()
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::db())
         .await?;
     Ok(count)
 }

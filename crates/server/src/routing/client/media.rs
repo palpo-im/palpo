@@ -6,7 +6,7 @@ mod upload_tests;
 #[cfg(test)]
 use diesel::prelude::*;
 #[cfg(test)]
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use mime::Mime;
 use reqwest::Url;
 use salvo::http::ResBody;
@@ -17,8 +17,6 @@ use uuid::Uuid;
 use crate::core::UnixMillis;
 use crate::core::client::media::*;
 use crate::core::identifiers::*;
-#[cfg(test)]
-use crate::data::connect;
 use crate::data::media::{DbMetadata, DbThumbnail, NewDbMetadata, NewDbThumbnail};
 #[cfg(test)]
 use crate::data::schema::*;
@@ -468,7 +466,7 @@ async fn reserve_thumbnail_cache_row(
         })
         .on_conflict_do_nothing()
         .returning(media_thumbnails::id)
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::data::db())
         .await
         .optional()?;
     if let Some(id) = inserted {
@@ -481,7 +479,7 @@ async fn reserve_thumbnail_cache_row(
         .filter(media_thumbnails::height.eq(height as i32))
         .filter(media_thumbnails::resize_method.eq(&method))
         .select(media_thumbnails::id)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::data::db())
         .await?;
     Ok((id, false))
 }
@@ -520,7 +518,7 @@ mod thumbnail_key_tests {
         let other_id = diesel::insert_into(media_thumbnails::table)
             .values(&row)
             .returning(media_thumbnails::id)
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         row.origin_server = origin.clone();
@@ -528,7 +526,7 @@ mod thumbnail_key_tests {
         let crop_id = diesel::insert_into(media_thumbnails::table)
             .values(&row)
             .returning(media_thumbnails::id)
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
@@ -550,7 +548,7 @@ mod thumbnail_key_tests {
         assert_ne!(first.0, crop_id);
         let stored = media_thumbnails::table
             .find(first.0)
-            .first::<DbThumbnail>(&mut connect().await.unwrap())
+            .first::<DbThumbnail>(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!((stored.width, stored.height), (96, 96));
@@ -575,7 +573,7 @@ mod thumbnail_key_tests {
             (other_id, false)
         );
         diesel::delete(media_thumbnails::table.filter(media_thumbnails::media_id.eq(media_id)))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
     }

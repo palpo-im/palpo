@@ -112,7 +112,7 @@ async fn query_by_type(_aa: AuthArgs) -> EmptyResult {
 #[cfg(test)]
 mod profile_tests {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
 
@@ -229,7 +229,7 @@ mod profile_tests {
         assert_eq!(
             data::schema::user_profiles::table
                 .count()
-                .get_result::<i64>(&mut data::connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap(),
             1

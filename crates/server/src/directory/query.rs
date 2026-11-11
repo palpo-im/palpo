@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diesel::prelude::*;
 use diesel::sql_types::{Array, BigInt, Binary, Bool, Json, Nullable, Text};
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -25,7 +25,7 @@ use crate::core::events::room::name::RoomNameEventContent;
 use crate::core::events::room::topic::RoomTopicEventContent;
 use crate::core::room::JoinRule;
 use crate::room::state::CompressedEvent;
-use crate::{AppResult, MatrixError, PduEvent, data};
+use crate::{AppResult, MatrixError, PduEvent};
 
 const TYPES: [&str; 8] = [
     "m.room.create",
@@ -182,7 +182,7 @@ async fn load_deltas(ids: &[i64], fields: &[Field]) -> AppResult<HashMap<i64, De
         )
         .bind::<Array<BigInt>, _>(ids)
         .bind::<Array<Binary>, _>(&prefixes)
-        .load::<Delta>(&mut data::connect().await?)
+        .load::<Delta>(&mut crate::data::db())
         .await?;
         result.extend(rows.into_iter().map(|row| (row.frame_id, row)));
     }
@@ -202,7 +202,7 @@ async fn load_contents(requests: &[(OwnedRoomId, i64, usize)]) -> AppResult<Cont
             JOIN event_datas d ON d.event_id = p.event_id AND d.room_id = q.room_id AND d.event_sn = q.event_sn")
             .bind::<Array<Text>, _>(&rooms).bind::<Array<BigInt>, _>(&sns)
             .bind::<Array<Text>, _>(&kinds)
-            .load::<Body>(&mut data::connect().await?).await?;
+            .load::<Body>(&mut crate::data::db()).await?;
         for body in rows {
             if let Ok(pdu) =
                 PduEvent::from_json_value(&body.room_id, &body.event_id, body.json_data)
@@ -277,12 +277,12 @@ pub(super) async fn get_local_public_rooms(
     let candidates = diesel::sql_query("SELECT r.id AS room_id, r.state_frame_id AS frame_id,
         COALESCE(s.joined_members, (SELECT count(*) FROM room_users u WHERE u.room_id = r.id AND u.membership = 'join'))::bigint AS joined
         FROM rooms r LEFT JOIN stats_room_currents s ON s.room_id = r.id WHERE r.is_public")
-        .load::<Candidate>(&mut data::connect().await?).await?;
+        .load::<Candidate>(&mut crate::data::db()).await?;
     let fields = diesel::sql_query(
         "SELECT id, event_ty FROM room_state_fields WHERE state_key = '' AND event_ty = ANY($1)",
     )
     .bind::<Array<Text>, _>(&TYPES[..])
-    .load::<Field>(&mut data::connect().await?)
+    .load::<Field>(&mut crate::data::db())
     .await?;
     let ids: Vec<_> = candidates.iter().filter_map(|room| room.frame_id).collect();
     let deltas = load_deltas(&ids, &fields).await?;

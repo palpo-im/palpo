@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashMap, hash_map};
 use std::time::Instant;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use horme::RunQueryDsl;
 use serde_json::json;
 
 use crate::core::client::key::ClaimKeysResBody;
@@ -738,7 +738,7 @@ async fn send_device_key_update_with_joined_rooms(
             data::schema::device_streams::user_id.eq(user_id),
             data::schema::device_streams::device_id.eq(device_id),
         ))
-        .execute(&mut data::connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     let remote_servers = data::room::joined_servers_for_rooms(joined_rooms).await?;
 

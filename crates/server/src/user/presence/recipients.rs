@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::presence::PresenceRecipientListUpdates;
@@ -49,7 +49,7 @@ pub async fn stream_id(user_id: &UserId) -> AppResult<Seqnum> {
     Ok(presence_recipient_streams::table
         .find(user_id)
         .select(presence_recipient_streams::stream_id)
-        .first::<Seqnum>(&mut connect().await?)
+        .first::<Seqnum>(&mut crate::data::db())
         .await
         .optional()?
         .unwrap_or(0))
@@ -77,7 +77,7 @@ pub async fn advance_stream(user_id: &UserId) -> AppResult<Seqnum> {
                 "GREATEST(presence_recipient_streams.stream_id, excluded.stream_id)",
             ),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     // Return the value allocated for this state, not the row's possibly higher maximum.
     // Concurrent callers must never collapse their distinct states onto the same ID; the
@@ -112,7 +112,7 @@ pub async fn sent_state(user_id: &UserId, server_id: &ServerName) -> AppResult<S
                 Option<Seqnum>,
                 Option<serde_json::Value>,
                 Option<Seqnum>,
-            )>(&mut connect().await?)
+            )>(&mut crate::data::db())
             .await
             .optional()?
     else {
@@ -158,7 +158,6 @@ pub async fn record_pending(
 ) -> AppResult<bool> {
     let recipients = serde_json::to_value(recipients)?;
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             // Lock the user's stream row between validating the reservation and storing
             // it. A concurrent snapshot or policy delta must either finish first (and make
@@ -228,7 +227,7 @@ pub async fn clear_pending(server_id: &ServerName) -> AppResult<()> {
         presence_recipient_sets::pending_recipients.eq(None::<serde_json::Value>),
         presence_recipient_sets::pending_edu_sn.eq(None::<Seqnum>),
     ))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::data::db())
     .await?;
     Ok(())
 }
@@ -246,7 +245,6 @@ pub async fn confirm_sent(
     presence_edu_sn: Option<Seqnum>,
 ) -> AppResult<()> {
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             confirm_sent_with_connection(conn, server_id, edu_sn, presence_edu_sn).await
         })
@@ -321,7 +319,7 @@ pub async fn remote_set(
             remote_presence_recipients::stream_id,
             remote_presence_recipients::recipients,
         ))
-        .first::<(Option<Seqnum>, serde_json::Value)>(&mut connect().await?)
+        .first::<(Option<Seqnum>, serde_json::Value)>(&mut crate::data::db())
         .await
         .optional()?
     else {
@@ -358,7 +356,7 @@ pub async fn store_remote_set(
                 "nextval('remote_presence_recovery_seq')",
             )),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     Ok(())
 }
@@ -366,7 +364,7 @@ pub async fn store_remote_set(
 /// Removes selective state when a remote origin sends a legacy presence update.
 pub async fn clear_remote_set(user_id: &UserId) -> AppResult<()> {
     diesel::delete(remote_presence_recipients::table.find(user_id))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     Ok(())
 }
@@ -383,7 +381,6 @@ pub async fn record_confirmed(
 ) -> AppResult<bool> {
     let recipients = serde_json::to_value(recipients)?;
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             let current_stream = presence_recipient_streams::table
                 .find(user_id)
@@ -435,7 +432,6 @@ pub async fn forget_confirmed(
     stream_id: Seqnum,
 ) -> AppResult<bool> {
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             let current_stream = presence_recipient_streams::table
                 .find(user_id)
@@ -461,7 +457,7 @@ pub async fn wake_recipient_servers(user_id: &UserId) -> AppResult<()> {
     let mut servers: BTreeSet<OwnedServerName> = presence_recipient_sets::table
         .filter(presence_recipient_sets::user_id.eq(user_id))
         .select(presence_recipient_sets::server_id)
-        .load(&mut connect().await?)
+        .load(&mut crate::data::db())
         .await?
         .into_iter()
         .collect();
@@ -511,7 +507,7 @@ async fn recalculate_recipients(user_id: &UserId) -> AppResult<()> {
         let query = presence_recipient_sets::table
             .filter(presence_recipient_sets::user_id.eq(user_id))
             .select(presence_recipient_sets::user_id);
-        if !crate::data::diesel_exists!(query, &mut connect().await?)? {
+        if !crate::data::diesel_exists!(query, &mut crate::data::db())? {
             return Ok(());
         }
     }
@@ -525,7 +521,6 @@ async fn recalculate_recipients(user_id: &UserId) -> AppResult<()> {
 /// a transition they conservatively skipped while the recipient set was unknown.
 async fn restamp_presence(user_id: &UserId) -> AppResult<bool> {
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             crate::data::user::lock_presence_stream(conn).await?;
             Ok(crate::data::user::restamp_presence_with_conn(conn, user_id).await?)
@@ -542,7 +537,6 @@ async fn publish_recovery(
 ) -> AppResult<bool> {
     let recipients = serde_json::to_value(&snapshot.1)?;
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             crate::data::user::lock_presence_stream(conn).await?;
             let updated = diesel::update(
@@ -787,7 +781,7 @@ pub async fn schedule_resync(origin: &ServerName, user_id: &UserId) -> AppResult
                     .find(&user_id)
                     .filter(remote_presence_recipients::stream_id.is_null())
                     .select(remote_presence_recipients::recovery_generation)
-                    .first::<i64>(&mut connect().await?)
+                    .first::<i64>(&mut crate::data::db())
                     .await
                     .optional()?;
                 let Some(generation) = generation else {
@@ -1108,7 +1102,7 @@ mod tests {
         store_remote_set(&user, None, &BTreeSet::new())
             .await
             .unwrap();
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         let generation = remote_presence_recipients::table
             .find(&user)
             .select(remote_presence_recipients::recovery_generation)
@@ -1175,7 +1169,7 @@ mod tests {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let writer = tokio::spawn(async move {
-            let mut writer_conn = connect().await.unwrap();
+            let mut writer_conn = crate::data::connect();
             writer_conn
                 .transaction::<(), AppError, _>(async |conn| {
                     crate::data::user::lock_presence_stream(conn).await?;

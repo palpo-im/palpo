@@ -215,7 +215,8 @@ async fn out_of_order_key_history(
     room: &OwnedRoomId,
 ) {
     use diesel::prelude::*;
-    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use diesel_async::SimpleAsyncConnection;
+    use horme::RunQueryDsl;
 
     use crate::data::schema::e2e_key_changes;
 
@@ -232,7 +233,7 @@ async fn out_of_order_key_history(
         .await
         .unwrap();
     }
-    let mut conn = data::connect().await.unwrap();
+    let mut conn = data::checkout().await.unwrap();
     let latest = e2e_key_changes::table
         .filter(e2e_key_changes::user_id.eq(peer))
         .filter(e2e_key_changes::room_id.eq(room))
@@ -283,7 +284,7 @@ async fn out_of_order_key_history(
     }
 
     let rolled_back = data::next_sn().await.unwrap();
-    let mut conn = data::connect().await.unwrap();
+    let mut conn = data::checkout().await.unwrap();
     conn.batch_execute("BEGIN").await.unwrap();
     diesel::insert_into(e2e_key_changes::table)
         .values(data::user::NewDbKeyChange {

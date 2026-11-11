@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::client::backup::{BackupAlgorithm, KeyBackupData};
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonValue, RawJson};
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = e2e_room_keys)]
@@ -90,7 +90,7 @@ pub async fn create_backup(
     };
     diesel::insert_into(e2e_room_keys_versions::table)
         .values(&new_keys_version)
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -116,7 +116,7 @@ pub async fn update_backup(
         e2e_room_keys_versions::algorithm.eq(serde_json::to_value(algorithm)?),
         e2e_room_keys_versions::etag.eq(UnixMillis::now().get() as i64),
     ))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(affected > 0)
 }
@@ -125,7 +125,7 @@ pub async fn get_latest_room_key(user_id: &UserId) -> DataResult<Option<DbRoomKe
     e2e_room_keys::table
         .filter(e2e_room_keys::user_id.eq(user_id))
         .order(e2e_room_keys::version.desc())
-        .first::<DbRoomKey>(&mut connect().await?)
+        .first::<DbRoomKey>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -140,7 +140,7 @@ pub async fn get_room_key(
         .filter(e2e_room_keys::user_id.eq(user_id))
         .filter(e2e_room_keys::room_id.eq(room_id))
         .filter(e2e_room_keys::version.eq(version))
-        .first::<DbRoomKey>(&mut connect().await?)
+        .first::<DbRoomKey>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -153,7 +153,7 @@ pub async fn get_latest_room_keys_version(
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
         .filter(e2e_room_keys_versions::is_trashed.eq(false))
         .order(e2e_room_keys_versions::version.desc())
-        .first::<DbRoomKeysVersion>(&mut connect().await?)
+        .first::<DbRoomKeysVersion>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -166,7 +166,7 @@ pub async fn get_room_keys_version(
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
         .filter(e2e_room_keys_versions::version.eq(version))
         .filter(e2e_room_keys_versions::is_trashed.eq(false))
-        .first::<DbRoomKeysVersion>(&mut connect().await?)
+        .first::<DbRoomKeysVersion>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -216,7 +216,7 @@ pub async fn add_key(
             ))
             .do_update()
             .set(&new_key)
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
     }
     Ok(())
@@ -227,7 +227,7 @@ pub async fn count_keys(user_id: &UserId, version: i64) -> DataResult<i64> {
         .filter(e2e_room_keys::user_id.eq(user_id))
         .filter(e2e_room_keys::version.eq(version))
         .count()
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -237,7 +237,7 @@ pub async fn get_etag(user_id: &UserId, version: i64) -> DataResult<String> {
         .filter(e2e_room_keys_versions::user_id.eq(user_id))
         .filter(e2e_room_keys_versions::version.eq(version))
         .select(e2e_room_keys_versions::etag)
-        .first(&mut connect().await?)
+        .first(&mut crate::db())
         .await
         .map(|etag: i64| etag.to_string())
         .map_err(Into::into)
@@ -254,7 +254,7 @@ pub async fn get_key_for_session(
         .filter(e2e_room_keys::version.eq(version))
         .filter(e2e_room_keys::room_id.eq(room_id))
         .filter(e2e_room_keys::session_id.eq(session_id))
-        .first::<DbRoomKey>(&mut connect().await?)
+        .first::<DbRoomKey>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -268,7 +268,7 @@ pub async fn delete_backup(user_id: &UserId, version: i64) -> DataResult<()> {
             .filter(e2e_room_keys_versions::version.eq(version)),
     )
     .set(e2e_room_keys_versions::is_trashed.eq(true))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -279,7 +279,7 @@ pub async fn delete_all_keys(user_id: &UserId, version: i64) -> DataResult<()> {
             .filter(e2e_room_keys::user_id.eq(user_id))
             .filter(e2e_room_keys::version.eq(version)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -291,7 +291,7 @@ pub async fn delete_room_keys(user_id: &UserId, version: i64, room_id: &RoomId) 
             .filter(e2e_room_keys::version.eq(version))
             .filter(e2e_room_keys::room_id.eq(room_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -309,7 +309,7 @@ pub async fn delete_room_key(
             .filter(e2e_room_keys::room_id.eq(room_id))
             .filter(e2e_room_keys::session_id.eq(session_id)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }

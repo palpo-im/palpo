@@ -2,7 +2,8 @@
 use std::time::Duration;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl, SimpleAsyncConnection};
+use diesel_async::{AsyncConnection, SimpleAsyncConnection};
+use horme::RunQueryDsl;
 use salvo::prelude::*;
 use salvo::test::{ResponseExt, TestClient};
 use serde_json::{Value, json};
@@ -26,7 +27,7 @@ async fn wait_for_locks(class: i64, key: i64, sub: i16, count: i64) {
                 .bind::<diesel::sql_types::BigInt,_>(class)
                 .bind::<diesel::sql_types::BigInt,_>(key)
                 .bind::<diesel::sql_types::SmallInt,_>(sub)
-                .get_result::<Number>(&mut data::connect().await.unwrap()).await.unwrap();
+                .get_result::<Number>(&mut crate::data::db()).await.unwrap();
             if waiting.number >= count { break; }
             tokio::task::yield_now().await;
         }
@@ -120,7 +121,7 @@ async fn imported_peer(room: &OwnedRoomId, peer: &OwnedUserId) {
         NewDbEvent::from_canonical_json_with_room_id(&pdu.event_id, sn, &canonical, false, room)
             .unwrap();
     event.is_outlier = false;
-    let mut conn = data::connect().await.unwrap();
+    let mut conn = data::connect();
     event.save_with_conn(&mut conn).await.unwrap();
     DbEventData {
         event_id: pdu.event_id.clone(),
@@ -161,7 +162,7 @@ async fn imported_peer(room: &OwnedRoomId, peer: &OwnedUserId) {
         .unwrap()
         .frame_id;
     state::set_room_state(room, frame).await.unwrap();
-    let mut conn = data::connect().await.unwrap();
+    let mut conn = data::connect();
     diesel::insert_into(room_users::table)
         .values(NewDbRoomUser {
             event_id: pdu.event_id.clone(),
@@ -310,7 +311,7 @@ async fn run() {
     let service = Service::new(crate::routing::root());
     let room = room(&service, &token).await;
     imported_peer(&room, &peer).await;
-    let mut control = data::connect().await.unwrap();
+    let mut control = data::checkout().await.unwrap();
     control.batch_execute("CREATE TABLE key_fence_control(target_user TEXT, fail BOOLEAN); INSERT INTO key_fence_control VALUES ('',false);
         CREATE FUNCTION key_fence_pause() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
         IF NEW.user_id=(SELECT target_user FROM key_fence_control) THEN
@@ -343,7 +344,7 @@ async fn run() {
             }
             let baseline = sync(&service, &token, None).await;
             let from = baseline["next_batch"].as_str().unwrap().to_owned();
-            let mut gate = data::connect().await.unwrap();
+            let mut gate = data::checkout().await.unwrap();
             diesel::sql_query("UPDATE key_fence_control SET target_user=$1,fail=$2")
                 .bind::<diesel::sql_types::Text, _>(user.as_str())
                 .bind::<diesel::sql_types::Bool, _>(fail)
@@ -396,7 +397,7 @@ async fn run() {
                     );
                 }
                 diesel::sql_query("UPDATE key_fence_control SET fail=false")
-                    .execute(&mut data::connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                 tokio::time::timeout(Duration::from_secs(4), publish(kind, &user, &room, version))
@@ -425,13 +426,13 @@ async fn cancellation_and_concurrency(
     room: &OwnedRoomId,
 ) {
     diesel::sql_query("UPDATE key_fence_control SET target_user='',fail=false")
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     let (started, waiting) = tokio::sync::oneshot::channel();
     let user = reader.clone();
     let cancelled = tokio::spawn(async move {
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::checkout().await.unwrap();
         conn.transaction::<_, data::DataError, _>(async |conn| {
             data::user::key::lock_key_change_user(conn, &user).await?;
             data::user::key::lock_key_change_stream(conn).await?;
@@ -469,7 +470,7 @@ async fn cancellation_and_concurrency(
     assert!(cancelled.await.unwrap_err().is_cancelled());
     let mut leased = Vec::new();
     for _ in 0..data::status().max_size {
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::checkout().await.unwrap();
         let pid = diesel::sql_query("SELECT pg_backend_pid()::bigint AS number")
             .get_result::<Number>(&mut conn)
             .await
@@ -512,7 +513,7 @@ async fn cancellation_and_concurrency(
     let baseline = sync(service, token, None).await;
     let from = baseline["next_batch"].as_str().unwrap().to_owned();
     let lower = from.parse::<crate::event::BatchToken>().unwrap().event_sn();
-    let mut gate = data::connect().await.unwrap();
+    let mut gate = data::checkout().await.unwrap();
     diesel::sql_query("UPDATE key_fence_control SET target_user=$1")
         .bind::<diesel::sql_types::Text, _>(reader.as_str())
         .execute(&mut gate)
@@ -538,7 +539,7 @@ async fn cancellation_and_concurrency(
         loop {
             let waiting=diesel::sql_query("SELECT count(*) AS number FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND NOT granted AND objsubid=1 AND classid::bigint=((hashtextextended($1,$2)>>32)&4294967295) AND objid::bigint=(hashtextextended($1,$2)&4294967295)")
                 .bind::<diesel::sql_types::Text,_>(reader.as_str()).bind::<diesel::sql_types::BigInt,_>(1_757_253_914_i64)
-                .get_result::<Number>(&mut data::connect().await.unwrap()).await.unwrap();
+                .get_result::<Number>(&mut crate::data::db()).await.unwrap();
             if waiting.number>0 {break;}
             tokio::task::yield_now().await;
         }
@@ -576,7 +577,7 @@ async fn cancellation_and_concurrency(
     )
     .bind::<diesel::sql_types::Text, _>(reader.as_str())
     .bind::<diesel::sql_types::BigInt, _>(lower)
-    .get_result::<Number>(&mut data::connect().await.unwrap())
+    .get_result::<Number>(&mut crate::data::db())
     .await
     .unwrap();
     assert_eq!(
@@ -587,7 +588,7 @@ async fn cancellation_and_concurrency(
         "SELECT max(occur_sn) AS number FROM e2e_key_change_history WHERE user_id=$1",
     )
     .bind::<diesel::sql_types::Text, _>(reader.as_str())
-    .get_result::<Number>(&mut data::connect().await.unwrap())
+    .get_result::<Number>(&mut crate::data::db())
     .await
     .unwrap()
     .number;
@@ -595,7 +596,7 @@ async fn cancellation_and_concurrency(
         .filter(e2e_key_changes::user_id.eq(reader))
         .filter(e2e_key_changes::room_id.is_null())
         .select(e2e_key_changes::occur_sn)
-        .first::<Seqnum>(&mut data::connect().await.unwrap())
+        .first::<Seqnum>(&mut crate::data::db())
         .await
         .unwrap();
     assert_eq!(

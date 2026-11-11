@@ -21,7 +21,6 @@ use crate::core::events::{
 use crate::core::identifiers::*;
 use crate::core::serde::RawJson;
 use crate::core::{Seqnum, UnixMillis};
-use crate::data::connect;
 use crate::event::search::event_type_matches;
 use crate::event::{BatchToken, EventHash, PduEvent, SnPduEvent};
 use crate::room::{state, timeline};
@@ -955,7 +954,7 @@ async fn load_joined_room(
 /// gain a fabricated publication through a fallback to their identity.
 pub(crate) async fn captured_sync_frame(room_id: &RoomId, until: Seqnum) -> AppResult<i64> {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     use crate::data::schema::{event_points, events};
 
@@ -974,7 +973,7 @@ pub(crate) async fn captured_sync_frame(room_id: &RoomId, until: Seqnum) -> AppR
         .filter(event_points::live_published_sn.le(until))
         .select(event_points::live_published_frame_id)
         .order_by(event_points::live_published_sn.desc())
-        .first::<Option<i64>>(&mut data::connect().await?)
+        .first::<Option<i64>>(&mut crate::data::db())
         .await?
         .ok_or_else(|| MatrixError::not_found("captured sync frame is not found").into())
 }
@@ -1491,7 +1490,7 @@ async fn presence_visible_to(sender_id: &UserId, viewer_id: &UserId) -> AppResul
 
 /// Resolve at most five heroes from membership rows, without reading messages.
 async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec<String>> {
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
     #[derive(diesel::QueryableByName)]
     struct Hero {
         #[diesel(sql_type = diesel::sql_types::Text)]
@@ -1508,7 +1507,7 @@ async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec
     )
     .bind::<diesel::sql_types::Text, _>(room_id.as_str())
     .bind::<diesel::sql_types::Text, _>(sender_id.as_str())
-    .load::<Hero>(&mut connect().await?)
+    .load::<Hero>(&mut crate::data::db())
     .await?;
     Ok(rows.into_iter().map(|row| row.user_id).collect())
 }
@@ -1520,7 +1519,7 @@ mod member_presence_tests;
 #[cfg(test)]
 mod pagination_database_tests {
     use diesel::ExpressionMethods;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     use super::*;
     use crate::core::serde::to_canonical_object;
@@ -1544,7 +1543,7 @@ mod pagination_database_tests {
         )
         .unwrap();
         event.is_outlier = false;
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::connect();
         event.save_with_conn(&mut conn).await.unwrap();
         DbEventData {
             event_id: pdu.event_id.clone(),
@@ -1650,7 +1649,7 @@ mod pagination_database_tests {
 #[cfg(test)]
 mod hero_database_tests {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     use super::*;
     use crate::data::schema::room_users;
@@ -1677,7 +1676,7 @@ mod hero_database_tests {
                     .filter(room_users::room_id.eq(&room))
                     .filter(room_users::user_id.eq(&user)),
             )
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
             diesel::insert_into(room_users::table)
@@ -1696,7 +1695,7 @@ mod hero_database_tests {
                     state_data: None,
                     created_at: UnixMillis::now(),
                 })
-                .execute(&mut connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -1715,7 +1714,7 @@ mod hero_database_tests {
                 .filter(room_users::user_id.eq("@carol:example.org")),
         )
         .set(room_users::membership.eq("leave"))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
         assert_eq!(
@@ -1739,7 +1738,7 @@ mod hero_database_tests {
                     state_data: None,
                     created_at: UnixMillis::now(),
                 })
-                .execute(&mut connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -1749,10 +1748,9 @@ mod hero_database_tests {
 
 #[cfg(test)]
 mod joined_room_failure_tests {
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     use super::*;
-    use crate::data::connect;
     use crate::data::schema::room_users;
 
     pub(super) static FAIL_ROOM: std::sync::Mutex<Option<OwnedRoomId>> =
@@ -1792,7 +1790,7 @@ mod joined_room_failure_tests {
                     state_data: None,
                     created_at: UnixMillis::now(),
                 })
-                .execute(&mut connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -1800,7 +1798,7 @@ mod joined_room_failure_tests {
         diesel::sql_query(
             "ALTER TABLE rooms RENAME COLUMN state_frame_id TO unavailable_state_frame",
         )
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
         let current_lookup_failure = room::get_frame_id(&failed, None).await;
@@ -1808,14 +1806,14 @@ mod joined_room_failure_tests {
         // room pointer. Fault both real sources so this regression covers
         // either loader implementation without relaxing cursor assertions.
         diesel::sql_query("ALTER TABLE event_points RENAME COLUMN frame_id TO unavailable_frame")
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let historical_lookup_failure = room::get_frame_id(&failed, Some(99)).await;
         // Live publication has its own immutable frame source. Keep the
         // legacy faults above and cover this real captured lookup as well.
         diesel::sql_query("ALTER TABLE event_points RENAME COLUMN live_published_frame_id TO unavailable_live_frame")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
         let captured_lookup_failure = captured_sync_frame(&failed, 99).await;
         let lookup_failure = load_joined_room(
             &user,
@@ -1833,15 +1831,15 @@ mod joined_room_failure_tests {
         )
         .await;
         diesel::sql_query("ALTER TABLE event_points RENAME COLUMN unavailable_live_frame TO live_published_frame_id")
-            .execute(&mut connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
         diesel::sql_query("ALTER TABLE event_points RENAME COLUMN unavailable_frame TO frame_id")
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         diesel::sql_query(
             "ALTER TABLE rooms RENAME COLUMN unavailable_state_frame TO state_frame_id",
         )
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
         assert!(!current_lookup_failure.unwrap_err().is_not_found());

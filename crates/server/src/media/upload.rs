@@ -1,6 +1,5 @@
 //! Publication of reserved uploads. Storage is written before publishing its
 //! metadata, under the same cross-instance fence used by media deletion.
-use diesel_async::AsyncConnection;
 
 use crate::core::{ServerName, UnixMillis, UserId};
 use crate::data::media::{NewDbMetadata, UploadReservation};
@@ -31,8 +30,8 @@ pub(crate) async fn check_upload_reservation(
     owner: &UserId,
     started_at: UnixMillis,
 ) -> AppResult<()> {
-    let mut conn = data::connect().await?;
-    let reservation = data::media::upload_reservation(&mut conn, server, media_id, false).await?;
+    let mut conn = data::connect();
+    let reservation = data::media::upload_reservation(&mut conn, server, media_id).await?;
     authorize(reservation.as_ref(), owner, started_at)
 }
 
@@ -70,10 +69,9 @@ async fn publish_with_operator(
             return Err(MatrixError::cannot_overwrite_media("Media ID already has content").into());
         }
         data::connect()
-            .await?
             .transaction::<_, AppError, _>(async |conn| {
                 let reservation =
-                    data::media::upload_reservation(conn, &server, &media_id, true).await?;
+                    data::media::lock_upload_reservation(conn, &server, &media_id).await?;
                 let owner = metadata
                     .created_by
                     .as_deref()
@@ -94,7 +92,7 @@ async fn publish_with_operator(
 
 #[cfg(test)]
 mod tests {
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     use super::*;
 
@@ -149,9 +147,9 @@ mod tests {
 
         // A DB failure after the object write must not publish a successful upload.
         diesel::sql_query("CREATE FUNCTION reject_media_upload() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected metadata failure'; END $$")
-            .execute(&mut data::connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
         diesel::sql_query("CREATE TRIGGER reject_media_upload BEFORE INSERT ON media_metadatas FOR EACH ROW EXECUTE FUNCTION reject_media_upload()")
-            .execute(&mut data::connect().await.unwrap()).await.unwrap();
+            .execute(&mut crate::data::db()).await.unwrap();
         assert!(
             publish_with_operator(&operator, "_", metadata.clone(), b"old", now)
                 .await
@@ -167,7 +165,7 @@ mod tests {
             .await
             .unwrap();
         diesel::sql_query("DROP TRIGGER reject_media_upload ON media_metadatas")
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
 

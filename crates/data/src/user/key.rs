@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::encryption::{CrossSigningKey, DeviceKeys, OneTimeKey};
 use crate::core::identifiers::*;
@@ -148,7 +148,7 @@ pub async fn count_one_time_keys(
         .filter(e2e_one_time_keys::device_id.eq(device_id))
         .group_by(e2e_one_time_keys::algorithm)
         .select((e2e_one_time_keys::algorithm, diesel::dsl::count_star()))
-        .load::<(String, i64)>(&mut connect().await?)
+        .load::<(String, i64)>(&mut crate::db())
         .await?;
     Ok(BTreeMap::from_iter(
         list.into_iter()
@@ -174,7 +174,7 @@ pub async fn add_device_keys(
         .on_conflict((e2e_device_keys::user_id, e2e_device_keys::device_id))
         .do_update()
         .set(&new_device_key)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -187,7 +187,7 @@ pub async fn get_device_keys(
         .filter(e2e_device_keys::user_id.eq(user_id))
         .filter(e2e_device_keys::device_id.eq(device_id))
         .select(e2e_device_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
+        .first::<JsonValue>(&mut crate::db())
         .await
         .optional()?
         .map(|v| serde_json::from_value(v).map_err(Into::into))
@@ -198,7 +198,7 @@ pub async fn all_device_key_ids(user_id: &UserId) -> DataResult<Vec<OwnedDeviceI
     e2e_device_keys::table
         .filter(e2e_device_keys::user_id.eq(user_id))
         .select(e2e_device_keys::device_id)
-        .load::<OwnedDeviceId>(&mut connect().await?)
+        .load::<OwnedDeviceId>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -214,7 +214,7 @@ pub async fn get_device_keys_and_sigs(
         .filter(e2e_cross_signing_sigs::origin_user_id.eq(user_id))
         .filter(e2e_cross_signing_sigs::target_user_id.eq(user_id))
         .filter(e2e_cross_signing_sigs::target_device_id.eq(device_id))
-        .load::<DbCrossSignature>(&mut connect().await?)
+        .load::<DbCrossSignature>(&mut crate::db())
         .await?;
     for DbCrossSignature {
         origin_key_id,
@@ -232,12 +232,14 @@ pub async fn get_device_keys_and_sigs(
 }
 
 pub async fn delete_device_key_material(user_id: &UserId, device_id: &DeviceId) -> DataResult<()> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     delete_device_key_material_on_connection(&mut conn, user_id, device_id).await
 }
 
-pub(super) async fn delete_device_key_material_on_connection(
-    conn: &mut diesel_async::AsyncPgConnection,
+pub(super) async fn delete_device_key_material_on_connection<
+    P: horme::GetConnection<Connection = diesel_async::AsyncPgConnection>,
+>(
+    conn: &mut P,
     user_id: &UserId,
     device_id: &DeviceId,
 ) -> DataResult<()> {
@@ -279,7 +281,7 @@ pub(super) async fn delete_device_key_material_on_connection(
 }
 
 pub async fn delete_all_device_keys(user_id: &UserId) -> DataResult<()> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     let device_ids = e2e_device_keys::table
         .filter(e2e_device_keys::user_id.eq(user_id))
         .select(e2e_device_keys::device_id)
@@ -323,7 +325,7 @@ pub async fn keys_changed_users(
             .filter(e2e_key_changes::occur_sn.ge(since_sn))
             .filter(e2e_key_changes::occur_sn.le(until_sn))
             .select(e2e_key_changes::user_id)
-            .load::<OwnedUserId>(&mut connect().await?)
+            .load::<OwnedUserId>(&mut crate::db())
             .await
             .map_err(Into::into)
     } else {
@@ -335,7 +337,7 @@ pub async fn keys_changed_users(
             )
             .filter(e2e_key_changes::occur_sn.ge(since_sn))
             .select(e2e_key_changes::user_id)
-            .load::<OwnedUserId>(&mut connect().await?)
+            .load::<OwnedUserId>(&mut crate::db())
             .await
             .map_err(Into::into)
     }
@@ -358,7 +360,7 @@ pub async fn keys_changed_in_window(
     .bind::<diesel::sql_types::BigInt, _>(from)
     .bind::<diesel::sql_types::BigInt, _>(to)
     .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(users)
-    .load::<ChangedUser>(&mut connect().await?)
+    .load::<ChangedUser>(&mut crate::db())
     .await?
     .into_iter()
     .map(|row| row.user_id)
@@ -371,7 +373,7 @@ pub async fn has_master_cross_signing_key(user_id: &UserId) -> DataResult<bool> 
         .filter(e2e_cross_signing_keys::user_id.eq(user_id))
         .filter(e2e_cross_signing_keys::key_type.eq("master"))
         .count()
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::db())
         .await?;
     Ok(count > 0)
 }
@@ -389,7 +391,7 @@ pub async fn set_cross_signing_replacement_allowed(
         .on_conflict(e2e_cross_signing_uia_bypass::user_id)
         .do_update()
         .set(e2e_cross_signing_uia_bypass::updatable_before_ts.eq(expires_ts))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -399,7 +401,7 @@ pub async fn get_cross_signing_replacement_allowed(user_id: &UserId) -> DataResu
     e2e_cross_signing_uia_bypass::table
         .filter(e2e_cross_signing_uia_bypass::user_id.eq(user_id))
         .select(e2e_cross_signing_uia_bypass::updatable_before_ts)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -415,7 +417,7 @@ pub async fn get_cross_signing_key(
         .filter(e2e_cross_signing_keys::key_type.eq(key_type))
         .order_by(e2e_cross_signing_keys::id.desc())
         .select(e2e_cross_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
+        .first::<JsonValue>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -442,7 +444,7 @@ where
                 e2e_cross_signing_sigs::target_device_id
                     .eq(OwnedDeviceId::from(target_key_id.key_name().as_str())),
             )
-            .load::<DbCrossSignature>(&mut connect().await?)
+            .load::<DbCrossSignature>(&mut crate::db())
             .await?;
         for DbCrossSignature {
             origin_user_id,
@@ -476,7 +478,7 @@ pub async fn add_cross_signing_key(
             key_type: key_type.to_owned(),
             key_data: serde_json::to_value(key)?,
         })
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -496,7 +498,7 @@ pub async fn add_cross_signing_sig(signature: NewDbCrossSignature) -> DataResult
             e2e_cross_signing_sigs::signature
                 .eq(diesel::upsert::excluded(e2e_cross_signing_sigs::signature)),
         )
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -525,7 +527,7 @@ pub async fn add_one_time_key(
         ))
         .do_update()
         .set(e2e_one_time_keys::key_data.eq(serde_json::to_value(one_time_key)?))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -547,7 +549,6 @@ pub async fn add_fallback_key(
         created_at: UnixMillis::now(),
     };
     connect()
-        .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
             let identity =
                 serde_json::to_string(&(user_id.as_str(), device_id.as_str(), &new_key.algorithm))?;
@@ -604,7 +605,7 @@ pub async fn unused_fallback_key_types(
         .filter(e2e_fallback_keys::device_id.eq(device_id))
         .filter(e2e_fallback_keys::used_at.is_null())
         .select(e2e_fallback_keys::algorithm)
-        .load::<String>(&mut connect().await?)
+        .load::<String>(&mut crate::db())
         .await?
         .into_iter()
         .map(Into::into)
@@ -625,10 +626,9 @@ pub async fn claim_one_time_key(
         key_data: JsonValue,
     }
 
-    // Keep a single checkout through fallback selection and its used-state
-    // update. A connection temporary in the if-let condition otherwise lives
-    // through the body and can exhaust the pool when every claimant updates it.
-    let mut conn = connect().await?;
+    // The provider releases each lease before fallback selection or its update,
+    // including when a query result is used as an if-let condition.
+    let mut conn = crate::db();
 
     // Select and delete on the same connection in one statement. Returning only a
     // successfully deleted row prevents concurrent callers from receiving the
@@ -690,7 +690,7 @@ pub async fn device_list_stream_id(user_id: &UserId) -> DataResult<Seqnum> {
     Ok(device_streams::table
         .filter(device_streams::user_id.eq(user_id))
         .select(diesel::dsl::max(device_streams::id))
-        .first::<Option<i64>>(&mut connect().await?)
+        .first::<Option<i64>>(&mut crate::db())
         .await?
         .unwrap_or_default())
 }
@@ -706,7 +706,7 @@ const KEY_CHANGE_STREAM_LOCK: i64 = 0x50414c4b455953;
 pub async fn lock_key_change_user(
     conn: &mut diesel_async::AsyncPgConnection,
     user: &UserId,
-) -> diesel::QueryResult<()> {
+) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
         .bind::<diesel::sql_types::Text, _>(user.as_str())
         .bind::<diesel::sql_types::BigInt, _>(1_757_253_914_i64)
@@ -717,7 +717,7 @@ pub async fn lock_key_change_user(
 
 pub async fn lock_key_change_stream(
     conn: &mut diesel_async::AsyncPgConnection,
-) -> diesel::QueryResult<()> {
+) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
         .bind::<diesel::sql_types::BigInt, _>(KEY_CHANGE_STREAM_LOCK)
         .execute(conn)
@@ -729,7 +729,7 @@ pub async fn lock_key_change_stream(
 /// never acquire those locks while holding this stream lock.
 pub async fn lock_key_change_snapshot(
     conn: &mut diesel_async::AsyncPgConnection,
-) -> diesel::QueryResult<()> {
+) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock($1)")
         .bind::<diesel::sql_types::BigInt, _>(KEY_CHANGE_STREAM_LOCK)
         .execute(conn)
@@ -747,7 +747,6 @@ pub async fn publish_key_change(
         return Ok(());
     }
     connect()
-        .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
             lock_key_change_user(conn, user).await?;
             lock_key_change_stream(conn).await?;
@@ -810,16 +809,16 @@ pub async fn replace_key_change(change: &NewDbKeyChange) -> DataResult<()> {
         ))
         // A delayed older notification cannot move a client's stream boundary backwards.
         .filter(e2e_key_changes::occur_sn.lt(diesel::upsert::excluded(e2e_key_changes::occur_sn)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
 
 async fn remote_device_shared_rooms(
-    conn: &mut diesel_async::AsyncPgConnection,
+    conn: &mut impl horme::GetConnection<Connection = diesel_async::AsyncPgConnection>,
     user_id: &UserId,
     local_server: &ServerName,
-) -> diesel::QueryResult<Vec<OwnedRoomId>> {
+) -> horme::Result<Vec<OwnedRoomId>> {
     #[derive(diesel::QueryableByName)]
     struct SharedRoom {
         #[diesel(sql_type = diesel::sql_types::Text)]
@@ -854,7 +853,7 @@ pub async fn is_remote_device_list_tracked(
     user_id: &UserId,
     local_server: &ServerName,
 ) -> DataResult<bool> {
-    let mut conn = connect().await?;
+    let mut conn = connect();
     Ok(
         !remote_device_shared_rooms(&mut conn, user_id, local_server)
             .await?
@@ -872,8 +871,7 @@ pub async fn initialize_remote_device_list_snapshot(
     local_server: &ServerName,
 ) -> DataResult<bool> {
     let initialized = connect()
-        .await?
-        .transaction::<_, diesel::result::Error, _>(async |conn| {
+        .transaction::<_, crate::DataError, _>(async |conn| {
             diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
                 .bind::<diesel::sql_types::Text, _>(user_id.as_str())
                 .bind::<diesel::sql_types::BigInt, _>(1_757_253_913i64)
@@ -918,9 +916,8 @@ pub async fn apply_remote_device_list_version(
     let stream_id = stream_id.to_string();
     let changed_at = UnixMillis::now();
     let applied = connect()
-        .await?
-        .transaction::<_, diesel::result::Error, _>(async |conn| {
-            // Different versions for one user also replace the same marker rows.
+        .transaction::<_, crate::DataError, _>(async |conn| {
+                    // Different versions for one user also replace the same marker rows.
             // Serialize that replacement without holding a second pool connection.
             diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
                 .bind::<diesel::sql_types::Text, _>(user_id.as_str())
@@ -1061,7 +1058,7 @@ mod recovery_idempotency_tests {
         let signatures = e2e_cross_signing_sigs::table
             .filter(e2e_cross_signing_sigs::origin_user_id.eq(&user))
             .select(e2e_cross_signing_sigs::signature)
-            .load::<String>(&mut connect().await.unwrap())
+            .load::<String>(&mut crate::db())
             .await
             .unwrap();
         assert_eq!(signatures, vec!["verified-two"]);
@@ -1107,7 +1104,7 @@ mod recovery_idempotency_tests {
                     e2e_key_changes::occur_sn,
                     e2e_key_changes::changed_at,
                 ))
-                .load::<(Option<OwnedRoomId>, i64, UnixMillis)>(&mut connect().await.unwrap())
+                .load::<(Option<OwnedRoomId>, i64, UnixMillis)>(&mut crate::db())
                 .await
                 .unwrap();
             let matches = rows
@@ -1119,13 +1116,13 @@ mod recovery_idempotency_tests {
             assert_eq!(matches[0].2, UnixMillis(131));
         }
         diesel::delete(e2e_key_changes::table.filter(e2e_key_changes::user_id.eq(&user)))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::db())
             .await
             .unwrap();
         diesel::delete(
             e2e_cross_signing_sigs::table.filter(e2e_cross_signing_sigs::origin_user_id.eq(&user)),
         )
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::db())
         .await
         .unwrap();
     }

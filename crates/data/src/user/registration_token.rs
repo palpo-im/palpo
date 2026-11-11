@@ -1,9 +1,9 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 /// Database model for registration tokens
 #[derive(Identifiable, Queryable, Debug, Clone)]
@@ -110,7 +110,7 @@ pub async fn list_registration_tokens(
 
     let tokens = query
         .order(user_registration_tokens::created_at.desc())
-        .load::<DbRegistrationToken>(&mut connect().await?)
+        .load::<DbRegistrationToken>(&mut crate::db())
         .await?;
 
     Ok(tokens.into_iter().map(Into::into).collect())
@@ -120,7 +120,7 @@ pub async fn list_registration_tokens(
 pub async fn get_registration_token(token: &str) -> DataResult<Option<RegistrationTokenInfo>> {
     let result = user_registration_tokens::table
         .filter(user_registration_tokens::token.eq(token))
-        .first::<DbRegistrationToken>(&mut connect().await?)
+        .first::<DbRegistrationToken>(&mut crate::db())
         .await
         .optional()?;
 
@@ -141,7 +141,7 @@ pub async fn create_registration_token(
         .values(&new_token)
         .on_conflict(user_registration_tokens::token)
         .do_nothing()
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
 
     Ok(result > 0)
@@ -158,7 +158,7 @@ pub async fn update_registration_token(
     // First check if the token exists
     let existing = user_registration_tokens::table
         .filter(user_registration_tokens::token.eq(token))
-        .first::<DbRegistrationToken>(&mut connect().await?)
+        .first::<DbRegistrationToken>(&mut crate::db())
         .await
         .optional()?;
 
@@ -167,7 +167,7 @@ pub async fn update_registration_token(
     }
 
     // Build update based on what was provided
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
 
     if let Some(new_uses_allowed) = uses_allowed {
         diesel::update(
@@ -202,7 +202,7 @@ pub async fn delete_registration_token(token: &str) -> DataResult<bool> {
     let result = diesel::delete(
         user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
 
     Ok(result > 0)
@@ -241,7 +241,7 @@ pub fn is_valid_token_chars(token: &str) -> bool {
 pub async fn is_token_valid(token: &str) -> DataResult<bool> {
     let db_token = user_registration_tokens::table
         .filter(user_registration_tokens::token.eq(token))
-        .first::<DbRegistrationToken>(&mut connect().await?)
+        .first::<DbRegistrationToken>(&mut crate::db())
         .await
         .optional()?;
 
@@ -274,7 +274,7 @@ pub async fn increment_pending(token: &str) -> DataResult<bool> {
         user_registration_tokens::table.filter(user_registration_tokens::token.eq(token)),
     )
     .set(user_registration_tokens::pending.eq(user_registration_tokens::pending + 1))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
 
     Ok(result > 0)
@@ -282,7 +282,7 @@ pub async fn increment_pending(token: &str) -> DataResult<bool> {
 
 /// Complete a registration (decrement pending, increment completed)
 pub async fn complete_registration(token: &str) -> DataResult<bool> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     let pending = user_registration_tokens::table
         .filter(user_registration_tokens::token.eq(token))
         .select(user_registration_tokens::pending)
@@ -309,7 +309,7 @@ pub async fn complete_registration(token: &str) -> DataResult<bool> {
 
 /// Cancel a pending registration (decrement pending)
 pub async fn cancel_registration(token: &str) -> DataResult<bool> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     let pending = user_registration_tokens::table
         .filter(user_registration_tokens::token.eq(token))
         .select(user_registration_tokens::pending)

@@ -9,8 +9,8 @@
 //! [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
 
 use diesel::prelude::*;
-use diesel::result::Error as DieselError;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::RunQueryDsl;
 
 use crate::core::identifiers::*;
 use crate::core::state::Event;
@@ -63,7 +63,7 @@ pub async fn publish_live_frame_with_conn(
     promote_to_timeline_with_conn(conn, pdu).await
 }
 
-async fn lock_sticky_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
+async fn lock_sticky_stream(conn: &mut AsyncPgConnection) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock($1)")
         .bind::<diesel::sql_types::BigInt, _>(STICKY_STREAM_LOCK_ID)
         .execute(conn)
@@ -71,7 +71,7 @@ async fn lock_sticky_stream(conn: &mut AsyncPgConnection) -> Result<(), DieselEr
     Ok(())
 }
 
-async fn lock_sticky_stream_shared(conn: &mut AsyncPgConnection) -> Result<(), DieselError> {
+async fn lock_sticky_stream_shared(conn: &mut AsyncPgConnection) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
         .bind::<diesel::sql_types::BigInt, _>(STICKY_STREAM_LOCK_ID)
         .execute(conn)
@@ -92,7 +92,6 @@ pub async fn curr_sn_after_sync_writes(
 ) -> AppResult<Seqnum> {
     let curr_sn =
         connect()
-            .await?
             .transaction::<_, crate::AppError, _>(async |conn| {
                 // Lock order: presence, live/sticky, this inbox, then keys.
                 // Key publishers use a shared stream lock; the short exclusive
@@ -321,7 +320,7 @@ pub async fn unexpired(
             event_stickies::event_sn,
             event_stickies::expires_at,
         ))
-        .load::<(OwnedEventId, Seqnum, i64)>(&mut connect().await?)
+        .load::<(OwnedEventId, Seqnum, i64)>(&mut crate::data::db())
         .await?;
 
     Ok(rows
@@ -352,7 +351,7 @@ pub async fn timeline_ttls(
         .filter(event_stickies::event_sn.eq_any(event_sns))
         .filter(event_stickies::expires_at.gt(now.0 as i64))
         .select((event_stickies::event_sn, event_stickies::expires_at))
-        .load::<(Seqnum, i64)>(&mut connect().await?)
+        .load::<(Seqnum, i64)>(&mut crate::data::db())
         .await?;
 
     let mut ttls = event_sns
@@ -372,7 +371,7 @@ pub async fn timeline_ttls(
 pub async fn delete_expired(now: UnixMillis) -> AppResult<usize> {
     let deleted =
         diesel::delete(event_stickies::table.filter(event_stickies::expires_at.le(now.0 as i64)))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
     Ok(deleted)
 }
@@ -404,7 +403,7 @@ async fn is_delivered_and_sticky(event_id: &EventId, now: UnixMillis) -> AppResu
         .filter(event_stickies::event_id.eq(event_id))
         .filter(event_stickies::deliver_sn.is_not_null())
         .filter(event_stickies::expires_at.gt(now.0 as i64));
-    Ok(crate::data::diesel_exists!(query, &mut connect().await?)?)
+    Ok(crate::data::diesel_exists!(query, &mut crate::data::db())?)
 }
 
 /// MSC4354: history visibility is not applied to sticky events. Any currently joined
@@ -460,7 +459,7 @@ pub async fn own_unexpired(
                 "event_datas.json_data ->> 'sender'",
             ),
         ))
-        .load::<(OwnedEventId, Option<String>)>(&mut connect().await?)
+        .load::<(OwnedEventId, Option<String>)>(&mut crate::data::db())
         .await?;
     Ok(rows
         .into_iter()
@@ -504,7 +503,7 @@ pub async fn soft_failed_candidates(
         .filter(events::is_redacted.eq(false))
         .order(event_stickies::event_sn.asc())
         .select(event_stickies::event_id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -763,7 +762,7 @@ mod tests {
             room_version: crate::core::RoomVersionId::V11,
             event_sn: None,
         };
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         // Scoped to this event so concurrently running database tests are unaffected.
         diesel::sql_query("CREATE FUNCTION reject_sticky_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_id = '$event:example.org' THEN RAISE EXCEPTION 'injected sticky failure'; END IF; RETURN NEW; END $$")
             .execute(&mut conn).await.unwrap();
@@ -864,7 +863,7 @@ mod tests {
         // The first receipt was long enough ago that the window has closed, and the reaper
         // has removed the sticky row.
         let first_receipt = now.0 as i64 - 120_000;
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         diesel::update(events::table.find(&event.event_id))
             .set(events::received_at.eq(first_receipt))
             .execute(&mut conn)
@@ -937,12 +936,7 @@ mod tests {
     }
 
     async fn promote(stored: &crate::event::SnPduEvent) {
-        use diesel_async::AsyncConnection;
-
-        use crate::data::connect;
-        connect()
-            .await
-            .unwrap()
+        crate::data::connect()
             .transaction::<(), crate::AppError, _>(async |conn| {
                 super::promote_to_timeline_with_conn(conn, stored).await
             })
@@ -1069,7 +1063,7 @@ mod tests {
         let mut passed = held.clone();
         passed.soft_failed = false;
         promote(&passed).await;
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         assert!(
             !events::table
                 .find(&held.event_id)
@@ -1109,7 +1103,7 @@ mod tests {
         let joined_server: &ServerName = "joined.org".try_into().unwrap();
         let other_server: &ServerName = "elsewhere.org".try_into().unwrap();
 
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         diesel::insert_into(room_users::table)
             .values(NewDbRoomUser {
                 event_id: EventId::parse("$carol-join:example.org")
@@ -1189,12 +1183,12 @@ mod tests {
         let room_id = RoomId::parse(room).unwrap();
         let room_id = &*room_id;
         let now = UnixMillis::now();
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         let sticky_rows = async |event_id: &EventId| {
             event_stickies::table
                 .find(event_id)
                 .count()
-                .get_result::<i64>(&mut connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap()
         };

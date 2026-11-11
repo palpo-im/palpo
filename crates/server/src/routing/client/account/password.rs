@@ -125,14 +125,14 @@ async fn change_password(
 #[cfg(test)]
 mod tests {
     use diesel::prelude::*;
-    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use diesel_async::SimpleAsyncConnection;
+    use horme::RunQueryDsl;
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
 
     use super::*;
     use crate::core::encryption::{DeviceKeys, OneTimeKey};
     use crate::core::{DeviceKeyAlgorithm, DeviceKeyId, OwnedDeviceId, UnixMillis, UserId};
-    use crate::data::connect;
     use crate::data::schema::*;
 
     #[tokio::test]
@@ -225,7 +225,7 @@ mod tests {
         .unwrap();
 
         // A late cleanup failure must roll back the earlier metadata/token/key deletes.
-        connect().await.unwrap().batch_execute("CREATE FUNCTION q07_fail_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.device_id = 'REVOKE_OTHER' THEN RAISE EXCEPTION 'injected cleanup failure'; END IF; RETURN OLD; END $$; CREATE TRIGGER q07_fail_cleanup BEFORE DELETE ON device_inboxes FOR EACH ROW EXECUTE FUNCTION q07_fail_cleanup();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("CREATE FUNCTION q07_fail_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.device_id = 'REVOKE_OTHER' THEN RAISE EXCEPTION 'injected cleanup failure'; END IF; RETURN OLD; END $$; CREATE TRIGGER q07_fail_cleanup BEFORE DELETE ON device_inboxes FOR EACH ROW EXECUTE FUNCTION q07_fail_cleanup();").await.unwrap();
         assert!(
             crate::data::user::device::remove_device(&user, &other)
                 .await
@@ -246,12 +246,12 @@ mod tests {
             user_access_tokens::table
                 .filter(user_access_tokens::user_id.eq(&user))
                 .count()
-                .get_result::<i64>(&mut connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap(),
             2
         );
-        connect().await.unwrap().batch_execute("DROP TRIGGER q07_fail_cleanup ON device_inboxes; DROP FUNCTION q07_fail_cleanup();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("DROP TRIGGER q07_fail_cleanup ON device_inboxes; DROP FUNCTION q07_fail_cleanup();").await.unwrap();
 
         let service = Service::new(
             Router::new()
@@ -313,7 +313,7 @@ mod tests {
             user_refresh_tokens::table
                 .filter(user_refresh_tokens::user_id.eq(&user))
                 .count()
-                .get_result::<i64>(&mut connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap(),
             0
@@ -322,7 +322,7 @@ mod tests {
             user_access_tokens::table
                 .filter(user_access_tokens::user_id.eq(&user))
                 .count()
-                .get_result::<i64>(&mut connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap(),
             1
@@ -379,13 +379,13 @@ mod tests {
                 state_data: None,
                 created_at: UnixMillis::now(),
             })
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         crate::data::room::add_joined_server(room, &remote)
             .await
             .unwrap();
-        connect().await.unwrap().batch_execute("CREATE FUNCTION q07_fail_wakeup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.server_id = 'remote-revoke.example' AND NEW.edu_json IS NULL THEN RAISE EXCEPTION 'injected wakeup failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q07_fail_wakeup BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION q07_fail_wakeup();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("CREATE FUNCTION q07_fail_wakeup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.server_id = 'remote-revoke.example' AND NEW.edu_json IS NULL THEN RAISE EXCEPTION 'injected wakeup failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q07_fail_wakeup BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION q07_fail_wakeup();").await.unwrap();
         let mut failed = TestClient::post("http://localhost/password")
             .add_header("authorization", "Bearer revoke-current", true)
             .json(&json!({"new_password":"newer password","logout_devices":true,
@@ -414,7 +414,7 @@ mod tests {
             user_access_tokens::table
                 .filter(user_access_tokens::user_id.eq(&user))
                 .count()
-                .get_result::<i64>(&mut connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap(),
             1
@@ -422,7 +422,7 @@ mod tests {
         let queued: Vec<Option<Vec<u8>>> = outgoing_requests::table
             .filter(outgoing_requests::server_id.eq(&remote))
             .select(outgoing_requests::edu_json)
-            .load(&mut connect().await.unwrap())
+            .load(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -437,7 +437,7 @@ mod tests {
             notified.insert(edu["content"]["device_id"].as_str().unwrap().to_owned());
         }
         assert_eq!(notified, targets.iter().map(ToString::to_string).collect());
-        connect().await.unwrap().batch_execute("DROP TRIGGER q07_fail_wakeup ON outgoing_requests; DROP FUNCTION q07_fail_wakeup();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("DROP TRIGGER q07_fail_wakeup ON outgoing_requests; DROP FUNCTION q07_fail_wakeup();").await.unwrap();
         assert!(
             crate::data::user::device::remove_other_devices(
                 &user,

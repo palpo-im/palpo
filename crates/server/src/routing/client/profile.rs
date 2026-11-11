@@ -613,7 +613,7 @@ mod tests {
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_profile_size_rejections_roll_back_fields_and_stream() {
         use diesel::prelude::*;
-        use diesel_async::RunQueryDsl;
+        use horme::RunQueryDsl;
         use serde_json::json;
 
         use crate::data::schema::user_profile_changes;
@@ -679,7 +679,7 @@ mod tests {
         let count = user_profile_changes::table
             .filter(user_profile_changes::user_id.eq(&user_id))
             .count()
-            .get_result::<i64>(&mut data::connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(

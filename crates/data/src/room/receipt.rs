@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::events::AnySyncEphemeralRoomEvent;
 use crate::core::events::receipt::{Receipt, ReceiptEventContent, ReceiptType};
@@ -10,7 +10,7 @@ use crate::core::serde::{JsonValue, RawJson};
 use crate::core::{Seqnum, UnixMillis};
 use crate::room::DbReceipt;
 use crate::schema::*;
-use crate::{DataResult, connect, next_sn};
+use crate::{DataResult, next_sn};
 
 /// Returns an iterator over the most recent read_receipts in a room that happened after the event
 /// with id `since`.
@@ -23,7 +23,7 @@ pub async fn read_receipts(
         .filter(event_receipts::sn.ge(since_sn))
         .filter(event_receipts::room_id.eq(room_id))
         .order_by(event_receipts::sn.desc())
-        .load::<DbReceipt>(&mut connect().await?)
+        .load::<DbReceipt>(&mut crate::db())
         .await?;
     let unthread_receipts = receipts
         .iter()
@@ -89,7 +89,7 @@ pub async fn set_private_read(
             json_data: JsonValue::default(),
             receipt_at: UnixMillis::now(),
         })
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -101,7 +101,7 @@ pub async fn last_private_read_update_sn(user_id: &UserId, room_id: &RoomId) -> 
         .filter(event_receipts::ty.eq(ReceiptType::ReadPrivate.to_string()))
         .order_by(event_receipts::event_sn.desc())
         .select(event_receipts::event_sn)
-        .first::<Seqnum>(&mut connect().await?)
+        .first::<Seqnum>(&mut crate::db())
         .await?;
 
     Ok(event_sn)
@@ -111,7 +111,7 @@ pub async fn last_private_read_update_sn(user_id: &UserId, room_id: &RoomId) -> 
 pub async fn insert_receipt(receipt: &DbReceipt) -> DataResult<()> {
     diesel::insert_into(event_receipts::table)
         .values(receipt)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -127,7 +127,7 @@ pub async fn last_private_read_event_id(
         .filter(event_receipts::ty.eq(ReceiptType::ReadPrivate.to_string()))
         .order_by(event_receipts::sn.desc())
         .select(event_receipts::event_id)
-        .first::<OwnedEventId>(&mut connect().await?)
+        .first::<OwnedEventId>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)

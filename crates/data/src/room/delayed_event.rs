@@ -7,7 +7,8 @@
 //! event scheduled for another worker without a time-based lease race.
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::identifiers::*;
 use crate::core::serde::JsonValue;
@@ -86,8 +87,8 @@ pub async fn create(new: NewDbDelayedEvent, max_scheduled: i64) -> DataResult<Sc
     let device_id = new.device_id.clone();
     let txn_id = new.txn_id.clone();
 
-    let mut conn = connect().await?;
-    conn.transaction::<_, diesel::result::Error, _>(async |conn| {
+    let mut conn = connect();
+    conn.transaction::<_, horme::Error, _>(async |conn| {
         // Serialize scheduling per user for the rest of this transaction;
         // released automatically on commit or rollback.
         diesel::sql_query("SELECT pg_advisory_xact_lock(hashtext($1))")
@@ -156,7 +157,7 @@ pub async fn get_by_txn_id(
         query = query.filter(delayed_events::device_id.is_null());
     }
     query
-        .first::<DbDelayedEvent>(&mut connect().await?)
+        .first::<DbDelayedEvent>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -170,7 +171,7 @@ pub async fn get_by_delay_id(
     delayed_events::table
         .filter(delayed_events::user_id.eq(user_id))
         .filter(delayed_events::delay_id.eq(delay_id))
-        .first::<DbDelayedEvent>(&mut connect().await?)
+        .first::<DbDelayedEvent>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -183,7 +184,7 @@ pub async fn next_send_at_of_user(user_id: &UserId) -> DataResult<Option<i64>> {
         .filter(delayed_events::user_id.eq(user_id))
         .filter(delayed_events::finalized_at.is_null())
         .select(diesel::dsl::min(delayed_events::send_at))
-        .get_result::<Option<i64>>(&mut connect().await?)
+        .get_result::<Option<i64>>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -200,7 +201,7 @@ pub async fn next_send_at() -> DataResult<Option<i64>> {
         .select(delayed_events::send_at)
         .for_update()
         .skip_locked()
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -260,7 +261,7 @@ struct DelayedEventOutput {
 /// the room event but before finalizing the delayed-event row or recording its
 /// regular transaction-id mapping.
 async fn get_output_with_conn(
-    conn: &mut AsyncPgConnection,
+    conn: &mut impl horme::GetConnection<Connection = AsyncPgConnection>,
     delay_id: &str,
 ) -> DataResult<Option<OwnedEventId>> {
     let row = diesel::sql_query(
@@ -280,7 +281,7 @@ async fn get_output_with_conn(
 
 /// Find a delayed event's durable timeline output using a pooled connection.
 pub async fn get_output(delay_id: &str) -> DataResult<Option<OwnedEventId>> {
-    let mut conn = connect().await?;
+    let mut conn = connect();
     get_output_with_conn(&mut conn, delay_id).await
 }
 
@@ -296,7 +297,7 @@ async fn delete_output_with_conn(conn: &mut AsyncPgConnection, delay_id: &str) -
 /// `None` if the event does not exist, is owned by another user, or was
 /// already finalized.
 pub async fn restart(
-    conn: &mut AsyncPgConnection,
+    conn: &mut crate::Db,
     user_id: &UserId,
     delay_id: &str,
 ) -> DataResult<Option<DbDelayedEvent>> {
@@ -406,11 +407,7 @@ pub async fn set_error_locked(
 /// Cancel a scheduled delayed event. Returns `true` if the event was
 /// cancelled, `false` if it did not exist unfinalized (caller decides between
 /// idempotent success and conflict from the row's current state).
-pub async fn cancel(
-    conn: &mut AsyncPgConnection,
-    user_id: &UserId,
-    delay_id: &str,
-) -> DataResult<bool> {
+pub async fn cancel(conn: &mut crate::Db, user_id: &UserId, delay_id: &str) -> DataResult<bool> {
     conn.transaction::<_, crate::DataError, _>(async |conn| {
         // As with restart, wait for an in-flight sender before timestamping the
         // outcome so `finalized_at` reflects when cancellation actually won.
@@ -465,7 +462,7 @@ pub async fn prune_finalized(finalized_before: i64) -> DataResult<usize> {
                 "NOT EXISTS (SELECT 1 FROM delayed_event_deliveries AS pending                  WHERE pending.event_id = delayed_events.event_id)",
             )),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await
     .map_err(Into::into)
 }
@@ -481,7 +478,7 @@ pub async fn pending_deliveries(
     query
         .order(delayed_event_deliveries::event_id)
         .limit(100)
-        .load(&mut connect().await?)
+        .load(&mut crate::db())
         .await
         .map_err(Into::into)
 }

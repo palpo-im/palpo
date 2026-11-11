@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use indexmap::IndexMap;
 use palpo_core::serde::JsonValue;
 use palpo_data::user::DbUser;
@@ -24,9 +24,9 @@ use crate::core::identifiers::*;
 use crate::core::serde::{
     CanonicalJsonObject, CanonicalJsonValue, to_canonical_value, to_raw_json_value,
 };
+use crate::data::diesel_exists;
 use crate::data::room::{DbEventData, NewDbEvent};
 use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
 use crate::event::handler::process_join_response_pdu;
 use crate::event::{
     PduBuilder, PduEvent, ensure_event_sn, gen_event_id_canonical_json, parse_fetched_pdu,
@@ -492,7 +492,7 @@ pub async fn join_room(
             room_id,
         )?)
         .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
 
     let join_pdu = SnPduEvent {
@@ -530,7 +530,7 @@ async fn notify_remote_join_device_list(
             .filter(room_users::room_id.ne(room_id))
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::room_server_id.eq(room_server_id));
-        if !diesel_exists!(query, &mut connect().await?)? {
+        if !diesel_exists!(query, &mut crate::data::db())? {
             // Joining changes who receives the list, not the list itself.
             // Use the persisted revision also served by snapshots and queued
             // placeholders; allocating an unrelated event position invents a
@@ -821,7 +821,7 @@ mod device_list_producer_tests {
             .filter(outgoing_requests::edu_json.is_not_null())
             .order(outgoing_requests::id.asc())
             .select(outgoing_requests::edu_json)
-            .load::<Option<Vec<u8>>>(&mut connect().await.unwrap())
+            .load::<Option<Vec<u8>>>(&mut crate::data::db())
             .await
             .unwrap()
             .into_iter()
@@ -934,7 +934,7 @@ mod device_list_producer_tests {
         data::user::device::create_device(&user, "FIRST".into(), "join-device-first", None, None)
             .await
             .unwrap();
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::checkout().await.unwrap();
         diesel::insert_into(rooms::table)
             .values(data::room::NewDbRoom {
                 id: room.clone(),
@@ -1045,7 +1045,7 @@ mod device_list_producer_tests {
         );
 
         let before = data::curr_sn().await.unwrap();
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::checkout().await.unwrap();
         conn.batch_execute("CREATE FUNCTION fail_join_device_queue() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected join queue failure'; END $$; CREATE TRIGGER fail_join_device_queue BEFORE INSERT ON outgoing_requests FOR EACH ROW EXECUTE FUNCTION fail_join_device_queue();").await.unwrap();
         drop(conn);
         assert!(

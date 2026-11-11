@@ -2,7 +2,7 @@ use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::Response;
 use salvo::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use salvo::http::{HeaderMap, ResBody, StatusCode};
@@ -12,7 +12,6 @@ use crate::core::federation::media::{ContentReqArgs, FileOrLocation, try_from_mu
 use crate::core::http_headers::ContentDisposition;
 use crate::core::identifiers::*;
 use crate::core::{Mxc, ServerName, UserId};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::exts::*;
 use crate::utils::content_disposition::make_content_disposition;
@@ -659,7 +658,7 @@ pub async fn delete_past_remote_media(
     };
     let mxcs = query
         .select((media_metadatas::origin_server, media_metadatas::media_id))
-        .load::<(OwnedServerName, String)>(&mut connect().await?)
+        .load::<(OwnedServerName, String)>(&mut crate::data::db())
         .await?;
 
     let mut count = 0;

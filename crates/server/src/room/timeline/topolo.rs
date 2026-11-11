@@ -1,11 +1,10 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use indexmap::IndexMap;
 
 use crate::core::client::filter::{RoomEventFilter, UrlFilter};
 use crate::core::identifiers::*;
 use crate::core::{Direction, Seqnum};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::BatchToken;
 use crate::{AppResult, SnPduEvent, utils};
@@ -336,7 +335,7 @@ async fn load_pdus_selected(
                 .offset(offset)
                 .limit(utils::usize_to_i64(limit))
                 .select((events::id, events::sn, events::stream_ordering))
-                .load::<(OwnedEventId, Seqnum, i64)>(&mut connect().await?)
+                .load::<(OwnedEventId, Seqnum, i64)>(&mut crate::data::db())
                 .await?
                 .into_iter()
                 .collect()
@@ -351,7 +350,7 @@ async fn load_pdus_selected(
                 .limit(utils::usize_to_i64(limit));
             query
                 .select((events::id, events::sn, events::stream_ordering))
-                .load::<(OwnedEventId, Seqnum, i64)>(&mut connect().await?)
+                .load::<(OwnedEventId, Seqnum, i64)>(&mut crate::data::db())
                 .await?
                 .into_iter()
                 .collect()

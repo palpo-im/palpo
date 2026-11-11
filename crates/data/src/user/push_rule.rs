@@ -2,7 +2,7 @@ use std::{fmt::Debug, mem};
 
 use bytes::BytesMut;
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use palpo_core::push::PusherIds;
 use tracing::{info, warn};
 
@@ -19,7 +19,7 @@ use crate::core::{
 };
 use crate::pdu::PduEvent;
 use crate::schema::*;
-use crate::{BAD_QUERY_RATE_LIMITER, DataError, DataResult, JsonValue, MatrixError, db};
+use crate::{BAD_QUERY_RATE_LIMITER, DataError, DataResult, JsonValue, MatrixError};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = push_rules)]
@@ -73,7 +73,7 @@ pub async fn get_push_rules(user_id: &UserId) -> DataResult<Vec<DbPushRule>> {
     let push_rules = push_rules::table
         .filter(push_rules::user_id.eq(user_id))
         .order_by((push_rules::priority_class.asc(), push_rules::priority.asc()))
-        .load::<DbPushRule>(&mut db::connect().await?)
+        .load::<DbPushRule>(&mut crate::connect())
         .await?;
     Ok(push_rules)
 }

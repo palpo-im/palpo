@@ -9,7 +9,7 @@ use crate::data::user::{NewDbAccessToken, NewDbUser, NewDbUserDevice};
 
 async fn provision() {
     let id = UserId::parse("@alice:retention.example").unwrap();
-    let mut conn = connect().await.unwrap();
+    let mut conn = crate::data::connect();
     diesel::insert_into(users::table)
         .values(NewDbUser {
             id: id.clone(),
@@ -183,7 +183,7 @@ async fn expiry_policy_changes_and_restart_recovery() {
     .await;
     let old_id = crate::core::EventId::parse(old["event_id"].as_str().unwrap()).unwrap();
     diesel::sql_query("INSERT INTO delayed_events (delay_id, user_id, room_id, event_type, content, delay_ms, txn_id, running_since, send_at, created_at, event_id, finalized_at) SELECT 'retention-delayed', json_data->>'sender', room_id, 'm.room.message', (json_data->'content')::jsonb, 1000, 'retention-delayed', 0, 0, 0, event_id, 0 FROM event_datas WHERE event_id = $1")
-        .bind::<diesel::sql_types::Text,_>(old_id.as_str()).execute(&mut connect().await.unwrap()).await.unwrap();
+        .bind::<diesel::sql_types::Text,_>(old_id.as_str()).execute(&mut crate::data::db()).await.unwrap();
     let terminal = body(
         put(
             &service,
@@ -198,11 +198,11 @@ async fn expiry_policy_changes_and_restart_recovery() {
     for event_id in [&old_id, &terminal_id] {
         diesel::update(events::table.find(event_id))
             .set(events::origin_server_ts.eq(UnixMillis(0)))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         diesel::sql_query("UPDATE event_datas SET json_data = jsonb_set(json_data::jsonb, '{origin_server_ts}', '0')::json WHERE event_id = $1")
-            .bind::<diesel::sql_types::Text,_>(event_id.as_str()).execute(&mut connect().await.unwrap()).await.unwrap();
+            .bind::<diesel::sql_types::Text,_>(event_id.as_str()).execute(&mut crate::data::db()).await.unwrap();
     }
     // Current DAG tips retain their payload; older messages expire on first read.
     assert_eq!(
@@ -220,7 +220,7 @@ async fn expiry_policy_changes_and_restart_recovery() {
         delayed_events::table
             .filter(delayed_events::event_id.eq(&old_id))
             .select(delayed_events::content)
-            .first::<Value>(&mut connect().await.unwrap())
+            .first::<Value>(&mut crate::data::db())
             .await
             .unwrap(),
         json!({})
@@ -295,7 +295,7 @@ async fn expiry_policy_changes_and_restart_recovery() {
         Some(crate::core::events::room::retention::MAX_LIFETIME)
     );
     diesel::sql_query("UPDATE event_datas SET json_data = jsonb_set(json_data::jsonb, '{content}', '{\"body\":\"resurrectedsecret\",\"msgtype\":\"m.text\"}')::json WHERE event_id = $1")
-        .bind::<diesel::sql_types::Text,_>(old_id.as_str()).execute(&mut connect().await.unwrap()).await.unwrap();
+        .bind::<diesel::sql_types::Text,_>(old_id.as_str()).execute(&mut crate::data::db()).await.unwrap();
     assert_eq!(
         get(&service, &format!("{prefix}/event/{old_id}"))
             .await
@@ -310,25 +310,25 @@ async fn expiry_policy_changes_and_restart_recovery() {
     // A late indexer must not recreate search entries after expiry either.
     diesel::update(delayed_events::table.filter(delayed_events::event_id.eq(&old_id)))
         .set(delayed_events::content.eq(json!({"body":"resurrectedsecret"})))
-        .execute(&mut connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     assert_eq!(
         delayed_events::table
             .filter(delayed_events::event_id.eq(&old_id))
             .select(delayed_events::content)
-            .first::<Value>(&mut connect().await.unwrap())
+            .first::<Value>(&mut crate::data::db())
             .await
             .unwrap(),
         json!({})
     );
     diesel::sql_query("INSERT INTO event_searches (event_id, event_sn, room_id, sender_id, key, vector, origin_server_ts) SELECT id, sn, room_id, sender_id, 'content.message', to_tsvector('english', 'resurrectedsecret'), origin_server_ts FROM events WHERE id = $1")
-        .bind::<diesel::sql_types::Text,_>(old_id.as_str()).execute(&mut connect().await.unwrap()).await.unwrap();
+        .bind::<diesel::sql_types::Text,_>(old_id.as_str()).execute(&mut crate::data::db()).await.unwrap();
     assert_eq!(
         event_searches::table
             .filter(event_searches::event_id.eq(&old_id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         0
@@ -424,18 +424,18 @@ async fn purge_queue_and_search_pages() {
     for id in &ids[..2] {
         diesel::update(events::table.find(id))
             .set(events::origin_server_ts.eq(UnixMillis(0)))
-            .execute(&mut connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         diesel::sql_query("UPDATE event_datas SET json_data = jsonb_set(json_data::jsonb, '{origin_server_ts}', '0')::json WHERE event_id = $1")
-            .bind::<diesel::sql_types::Text,_>(id.as_str()).execute(&mut connect().await.unwrap()).await.unwrap();
+            .bind::<diesel::sql_types::Text,_>(id.as_str()).execute(&mut crate::data::db()).await.unwrap();
         assert!(!was_expired(id).await.unwrap());
     }
     assert_eq!(
         event_searches::table
             .filter(event_searches::room_id.eq(&room_id))
             .count()
-            .get_result::<i64>(&mut connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap(),
         4
@@ -484,7 +484,7 @@ async fn purge_queue_and_search_pages() {
     }
     assert!(was_expired(&ids[0]).await.unwrap());
     // Save the original event row/payload, then exercise the real administrative purge.
-    let mut conn = connect().await.unwrap();
+    let mut conn = crate::data::connect();
     diesel::sql_query(
         "CREATE TEMP TABLE retention_saved_events AS SELECT * FROM events WHERE id = $1",
     )

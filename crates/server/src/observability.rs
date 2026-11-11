@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use diesel::QueryableByName;
-use diesel_async::{AsyncConnection, RunQueryDsl, SimpleAsyncConnection};
+use diesel_async::SimpleAsyncConnection;
+use horme::RunQueryDsl;
 use serde::Serialize;
 use tokio::sync::{AcquireError, Semaphore, SemaphorePermit};
 
@@ -337,7 +338,6 @@ impl QueueSampler {
         }
         let result = tokio::time::timeout(QUEUE_PROBE_TIMEOUT, async {
             data::connect()
-                .await?
                 .transaction::<_, AppError, _>(async |conn| {
                     conn.batch_execute("SET LOCAL statement_timeout = '500ms'")
                         .await?;

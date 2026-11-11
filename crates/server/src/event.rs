@@ -11,14 +11,13 @@ pub mod sticky;
 use std::collections::BTreeSet;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 pub use outlier::*;
 
 use crate::core::identifiers::*;
 use crate::core::room_version_rules::RoomIdFormatVersion;
 use crate::core::serde::{CanonicalJsonObject, RawJsonValue};
 use crate::core::{Direction, Seqnum, UnixMillis, signatures};
-use crate::data::connect;
 use crate::data::room::DbEvent;
 use crate::data::schema::*;
 use crate::utils::SeqnumQueueGuard;
@@ -56,7 +55,7 @@ pub async fn ensure_event_sn(
     if let Some(sn) = event_points::table
         .find(event_id)
         .select(event_points::event_sn)
-        .first::<Seqnum>(&mut connect().await?)
+        .first::<Seqnum>(&mut crate::data::db())
         .await
         .optional()?
     {
@@ -69,17 +68,17 @@ pub async fn ensure_event_sn(
             ))
             .on_conflict_do_nothing()
             .returning(event_points::event_sn)
-            .get_result::<Seqnum>(&mut connect().await?)
+            .get_result::<Seqnum>(&mut crate::data::db())
             .await?;
 
         diesel::update(events::table.find(event_id))
             .set(events::sn.eq(sn))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
 
         diesel::update(event_datas::table.find(event_id))
             .set(event_datas::event_sn.eq(sn))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
 
         Ok((sn, Some(crate::queue_seqnum(sn))))
@@ -90,7 +89,7 @@ pub async fn get_event_sn(event_id: &EventId) -> AppResult<Seqnum> {
     event_points::table
         .find(event_id)
         .select(event_points::event_sn)
-        .first::<Seqnum>(&mut connect().await?)
+        .first::<Seqnum>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -99,7 +98,7 @@ pub async fn get_live_token(event_id: &EventId) -> AppResult<BatchToken> {
     events::table
         .find(event_id)
         .select((events::sn, events::depth))
-        .first::<(Seqnum, i64)>(&mut connect().await?)
+        .first::<(Seqnum, i64)>(&mut crate::data::db())
         .await
         .map(|(sn, _depth)| BatchToken::new_live(sn))
         .map_err(Into::into)
@@ -108,7 +107,7 @@ pub async fn get_historic_token(event_id: &EventId) -> AppResult<BatchToken> {
     events::table
         .find(event_id)
         .select((events::sn, events::depth))
-        .first::<(Seqnum, i64)>(&mut connect().await?)
+        .first::<(Seqnum, i64)>(&mut crate::data::db())
         .await
         .map(|(sn, depth)| BatchToken::new_historic(sn, depth))
         .map_err(Into::into)
@@ -117,7 +116,7 @@ pub async fn get_historic_token_by_sn(event_sn: Seqnum) -> AppResult<BatchToken>
     events::table
         .filter(events::sn.eq(event_sn))
         .select((events::sn, events::depth))
-        .first::<(Seqnum, i64)>(&mut connect().await?)
+        .first::<(Seqnum, i64)>(&mut crate::data::db())
         .await
         .map(|(sn, depth)| BatchToken::new_historic(sn, depth))
         .map_err(Into::into)
@@ -127,7 +126,7 @@ pub async fn get_event_id_by_sn(event_sn: Seqnum) -> AppResult<OwnedEventId> {
     event_points::table
         .filter(event_points::event_sn.eq(event_sn))
         .select(event_points::event_id)
-        .first::<OwnedEventId>(&mut connect().await?)
+        .first::<OwnedEventId>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -150,7 +149,7 @@ pub async fn get_event_for_timestamp(
                     events::stream_ordering.asc(),
                 ))
                 .select((events::id, events::origin_server_ts))
-                .first::<(OwnedEventId, UnixMillis)>(&mut connect().await?)
+                .first::<(OwnedEventId, UnixMillis)>(&mut crate::data::db())
                 .await?;
             Ok((local_event_id, origin_server_ts))
         }
@@ -166,7 +165,7 @@ pub async fn get_event_for_timestamp(
                     events::stream_ordering.desc(),
                 ))
                 .select((events::id, events::origin_server_ts))
-                .first::<(OwnedEventId, UnixMillis)>(&mut connect().await?)
+                .first::<(OwnedEventId, UnixMillis)>(&mut crate::data::db())
                 .await?;
             Ok((local_event_id, origin_server_ts))
         }
@@ -183,7 +182,7 @@ pub async fn get_event_sn_and_ty(event_id: &EventId) -> AppResult<(Seqnum, Strin
     let (sn, ty) = events::table
         .find(event_id)
         .select((events::sn, events::ty))
-        .first::<(Seqnum, String)>(&mut connect().await?)
+        .first::<(Seqnum, String)>(&mut crate::data::db())
         .await?;
     Ok((sn, ty))
 }
@@ -191,7 +190,7 @@ pub async fn get_event_sn_and_ty(event_id: &EventId) -> AppResult<(Seqnum, Strin
 pub async fn get_db_event(event_id: &EventId) -> AppResult<DbEvent> {
     events::table
         .find(event_id)
-        .first::<DbEvent>(&mut connect().await?)
+        .first::<DbEvent>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -201,7 +200,7 @@ pub async fn get_frame_id(room_id: &RoomId, event_sn: Seqnum) -> AppResult<i64> 
         .filter(event_points::room_id.eq(room_id))
         .filter(event_points::event_sn.eq(event_sn))
         .select(event_points::frame_id)
-        .first::<Option<i64>>(&mut connect().await?)
+        .first::<Option<i64>>(&mut crate::data::db())
         .await?
         .ok_or(MatrixError::not_found("room frame id is not found").into())
 }
@@ -213,7 +212,7 @@ pub async fn get_last_frame_id(room_id: &RoomId, before_sn: Option<Seqnum>) -> A
             .filter(event_points::frame_id.is_not_null())
             .select(event_points::frame_id)
             .order_by(event_points::event_sn.desc())
-            .first::<Option<i64>>(&mut connect().await?)
+            .first::<Option<i64>>(&mut crate::data::db())
             .await?
             .ok_or(MatrixError::not_found("room last frame id is not found").into())
     } else {
@@ -222,7 +221,7 @@ pub async fn get_last_frame_id(room_id: &RoomId, before_sn: Option<Seqnum>) -> A
             .filter(event_points::frame_id.is_not_null())
             .select(event_points::frame_id)
             .order_by(event_points::event_sn.desc())
-            .first::<Option<i64>>(&mut connect().await?)
+            .first::<Option<i64>>(&mut crate::data::db())
             .await?
             .ok_or(MatrixError::not_found("room last frame id is not found").into())
     }
@@ -230,7 +229,7 @@ pub async fn get_last_frame_id(room_id: &RoomId, before_sn: Option<Seqnum>) -> A
 pub async fn update_frame_id(event_id: &EventId, frame_id: i64) -> AppResult<()> {
     diesel::update(event_points::table.find(event_id))
         .set(event_points::frame_id.eq(frame_id))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     // diesel::update(events::table.find(event_id))
     //     .set(events::stream_ordering.eq(frame_id))
@@ -241,7 +240,7 @@ pub async fn update_frame_id(event_id: &EventId, frame_id: i64) -> AppResult<()>
 pub async fn update_before_frame_id(event_id: &EventId, frame_id: i64) -> AppResult<()> {
     diesel::update(event_points::table.find(event_id))
         .set(event_points::before_frame_id.eq(frame_id))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     Ok(())
 }
@@ -249,7 +248,7 @@ pub async fn update_before_frame_id(event_id: &EventId, frame_id: i64) -> AppRes
 pub async fn update_frame_id_by_sn(event_sn: Seqnum, frame_id: i64) -> AppResult<()> {
     diesel::update(event_points::table.filter(event_points::event_sn.eq(event_sn)))
         .set(event_points::frame_id.eq(frame_id))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     // diesel::update(events::table.filter(events::sn.eq(event_sn)))
     //     .set(events::stream_ordering.eq(frame_id))
@@ -266,7 +265,7 @@ pub async fn ensure_frame_id_by_sn(event_sn: Seqnum, frame_id: i64) -> AppResult
             .filter(event_points::frame_id.is_null()),
     )
     .set(event_points::frame_id.eq(frame_id))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::data::db())
     .await?;
     Ok(())
 }
@@ -382,7 +381,7 @@ pub async fn seen_event_ids(
         .filter(events::room_id.eq(room_id))
         .filter(events::id.eq_any(event_ids))
         .select(events::id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?;
     Ok(seen_events)
 }

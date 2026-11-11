@@ -1,10 +1,10 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::serde::JsonValue;
 use crate::core::{OwnedServerName, ServerName, UnixMillis};
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 mod verified_keys;
 pub use verified_keys::*;
@@ -23,7 +23,7 @@ pub async fn signing_keys_data(server: &ServerName) -> DataResult<Option<JsonVal
     server_signing_keys::table
         .filter(server_signing_keys::server_id.eq(server))
         .select(server_signing_keys::key_data)
-        .first::<JsonValue>(&mut connect().await?)
+        .first::<JsonValue>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -33,7 +33,7 @@ pub async fn signing_keys_data(server: &ServerName) -> DataResult<Option<JsonVal
 pub async fn signing_keys_record(server: &ServerName) -> DataResult<Option<DbServerSigningKeys>> {
     server_signing_keys::table
         .filter(server_signing_keys::server_id.eq(server))
-        .first::<DbServerSigningKeys>(&mut connect().await?)
+        .first::<DbServerSigningKeys>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -57,7 +57,7 @@ pub async fn upsert_signing_keys(server: &ServerName, key_data: JsonValue) -> Da
             server_signing_keys::key_data.eq(key_data),
             server_signing_keys::updated_at.eq(UnixMillis::now()),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }

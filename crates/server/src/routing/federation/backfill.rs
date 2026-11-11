@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use indexmap::IndexMap;
 use salvo::prelude::*;
 
 use crate::core::UnixMillis;
 use crate::core::federation::backfill::{BackfillReqArgs, BackfillResBody};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::room::{state, timeline};
 use crate::routing::prelude::*;
@@ -34,7 +33,7 @@ async fn get_backfill(
         .filter(events::id.eq_any(&args.v))
         .filter(events::room_id.eq(&args.room_id))
         .select((events::id, events::depth))
-        .load::<(OwnedEventId, i64)>(&mut connect().await?)
+        .load::<(OwnedEventId, i64)>(&mut crate::data::db())
         .await?;
 
     let mut queue = BTreeMap::new();
@@ -51,7 +50,7 @@ async fn get_backfill(
         let mut prev_ids = event_edges::table
             .filter(event_edges::event_id.eq(&event_id))
             .select(event_edges::prev_id)
-            .load::<OwnedEventId>(&mut connect().await?)
+            .load::<OwnedEventId>(&mut crate::data::db())
             .await?;
         prev_ids.retain(|p| !events.contains_key(p));
         if !events.contains_key(&event_id)
@@ -66,7 +65,7 @@ async fn get_backfill(
         let prevs = events::table
             .filter(events::id.eq_any(&prev_ids))
             .select((events::id, events::depth))
-            .load::<(OwnedEventId, i64)>(&mut connect().await?)
+            .load::<(OwnedEventId, i64)>(&mut crate::data::db())
             .await?;
         for (prev_id, prev_depth) in prevs {
             queue.insert((prev_depth, prev_id.clone()), prev_id);

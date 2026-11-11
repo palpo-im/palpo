@@ -6,12 +6,11 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use diesel_async::AsyncConnection;
-#[cfg(not(feature = "unstable-msc4495"))]
-use diesel_async::RunQueryDsl;
 use futures_util::FutureExt;
 use futures_util::future::BoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt};
+#[cfg(not(feature = "unstable-msc4495"))]
+use horme::RunQueryDsl;
 use tokio::sync::mpsc;
 
 use super::{
@@ -25,6 +24,7 @@ use crate::core::identifiers::*;
 use crate::core::presence::{PresenceContent, PresenceUpdate};
 use crate::core::{Seqnum, device_id};
 use crate::exts::*;
+#[cfg(any(test, not(feature = "unstable-msc4495")))]
 use crate::room::state;
 use crate::{AppResult, data};
 
@@ -350,52 +350,11 @@ async fn destination_transaction(kind: &OutgoingKind) -> AppResult<bool> {
     Ok(true)
 }
 
-/// The pool normally rejects an open transaction at its *next checkout*.
-/// A cancelled destination must not leave locks in an idle pooled object.
-/// Until transaction().await returns completely, its backend state is treated
-/// as uncertain independently of Diesel's transaction-depth bookkeeping.
-pub(super) struct TransactionConnection {
-    connection: Option<data::PgPooledConnection>,
-    finished: bool,
-}
-
-impl TransactionConnection {
-    pub(super) fn new(connection: data::PgPooledConnection) -> Self {
-        Self {
-            connection: Some(connection),
-            finished: false,
-        }
-    }
-
-    pub(super) fn connection(&mut self) -> &mut diesel_async::AsyncPgConnection {
-        self.connection
-            .as_mut()
-            .expect("transaction connection is present")
-    }
-
-    pub(super) fn mark_finished(&mut self) {
-        self.finished = true;
-    }
-}
-
-impl Drop for TransactionConnection {
-    fn drop(&mut self) {
-        let Some(mut connection) = self.connection.take() else {
-            return;
-        };
-        if !self.finished
-            || diesel_async::pooled_connection::PoolableConnection::is_broken(&mut *connection)
-        {
-            // AsyncPgConnection::drop shuts down its driver; PostgreSQL rolls
-            // back instead of keeping the cancelled transaction in the pool.
-            drop(data::PgPooledConnection::take(connection));
-        }
-    }
-}
+#[cfg(test)]
+use crate::data::pool::TransactionConnection;
 
 async fn acknowledge_destination(kind: &OutgoingKind, window: Option<&EduWindow>) -> AppResult<()> {
-    let mut connection = TransactionConnection::new(data::connect().await?);
-    let result = connection.connection().transaction::<_, crate::AppError, _>(async |conn| {
+    data::connect().transaction::<_, crate::AppError, _>(async |conn| {
         if let (OutgoingKind::Normal(server), Some(window)) = (kind, window) {
             #[cfg(feature = "unstable-msc4495")]
             crate::user::presence::recipients::confirm_sent_with_connection(
@@ -414,9 +373,7 @@ async fn acknowledge_destination(kind: &OutgoingKind, window: Option<&EduWindow>
         }
         super::delete_active_requests_with_connection(conn, kind).await?;
         Ok(())
-    }).await;
-    connection.mark_finished();
-    result
+    }).await
 }
 
 fn retry_backoff(tries: u32) -> Duration {
@@ -881,7 +838,7 @@ mod tests {
     #[ignore = "run alone with an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn review_sender_survives_ack_failure_and_recovers_startup_failure() {
         use diesel::prelude::*;
-        use diesel_async::RunQueryDsl;
+        use horme::RunQueryDsl;
 
         use crate::data::schema::outgoing_requests;
         crate::test_database::init();
@@ -911,7 +868,7 @@ mod tests {
             .unwrap();
         // nextval is deliberately non-transactional: it proves the failing
         // DELETE ran even though its transaction rolls back.
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::connect();
         for sql in [
             "CREATE SEQUENCE review_ack_attempts",
             "CREATE FUNCTION review_fail_ack() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.appservice_id = 'ack-fault' THEN PERFORM nextval('review_ack_attempts'); RAISE EXCEPTION 'injected transient acknowledgement failure'; END IF; RETURN OLD; END $$",
@@ -934,13 +891,13 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let attempted = diesel::sql_query("SELECT is_called FROM review_ack_attempts")
-                    .get_result::<Attempted>(&mut data::connect().await.unwrap())
+                    .get_result::<Attempted>(&mut crate::data::db())
                     .await
                     .unwrap()
                     .is_called;
                 let claim_attempted =
                     diesel::sql_query("SELECT is_called FROM review_claim_attempts")
-                        .get_result::<Attempted>(&mut data::connect().await.unwrap())
+                        .get_result::<Attempted>(&mut crate::data::db())
                         .await
                         .unwrap()
                         .is_called;
@@ -979,18 +936,18 @@ mod tests {
             1
         );
         diesel::sql_query("DROP TRIGGER review_ack_failure ON outgoing_requests")
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         diesel::sql_query("DROP TRIGGER review_claim_failure ON outgoing_requests")
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(36), async {
             loop {
                 let count: i64 = outgoing_requests::table
                     .count()
-                    .get_result(&mut data::connect().await.unwrap())
+                    .get_result(&mut crate::data::db())
                     .await
                     .unwrap();
                 if count == 0 {
@@ -1021,7 +978,7 @@ mod tests {
             .await
             .unwrap();
         diesel::sql_query("ALTER TABLE outgoing_requests RENAME TO review_unavailable_requests")
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let (_sender, receiver) = mpsc::channel(8);
@@ -1034,14 +991,14 @@ mod tests {
         .await
         .unwrap();
         diesel::sql_query("ALTER TABLE review_unavailable_requests RENAME TO outgoing_requests")
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let count: i64 = outgoing_requests::table
                     .count()
-                    .get_result(&mut data::connect().await.unwrap())
+                    .get_result(&mut crate::data::db())
                     .await
                     .unwrap();
                 if count == 0 {

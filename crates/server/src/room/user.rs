@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use indexmap::IndexMap;
 use lru_cache::LruCache;
 
@@ -14,9 +14,9 @@ use crate::core::events::{
 use crate::core::identifiers::*;
 use crate::core::push::{NewPushRule, NewSimplePushRule};
 use crate::core::serde::{JsonValue, RawJson};
+use crate::data::diesel_exists;
 use crate::data::room::{DbEventPushSummary, DbRoomTag, NewDbRoomTag};
 use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
 use crate::exts::*;
 use crate::{AppError, AppResult, MatrixError, utils};
@@ -102,7 +102,7 @@ pub async fn notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<Use
     let summaries = event_push_summaries::table
         .filter(event_push_summaries::user_id.eq(user_id))
         .filter(event_push_summaries::room_id.eq(room_id))
-        .load::<DbEventPushSummary>(&mut connect().await?)
+        .load::<DbEventPushSummary>(&mut crate::data::db())
         .await?;
     Ok(summaries.into())
 }
@@ -112,7 +112,7 @@ pub async fn highlight_count(user_id: &UserId, room_id: &RoomId) -> AppResult<u6
         .filter(event_push_summaries::user_id.eq(user_id))
         .filter(event_push_summaries::room_id.eq(room_id))
         .select(event_push_summaries::highlight_count)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::data::db())
         .await
         .unwrap_or_default();
     Ok(count as u64)
@@ -124,7 +124,7 @@ pub async fn last_read_notification(user_id: &UserId, room_id: &RoomId) -> AppRe
         .filter(event_receipts::room_id.eq(room_id))
         .order_by(event_receipts::event_sn.desc())
         .select(event_receipts::event_sn)
-        .first::<Seqnum>(&mut connect().await?)
+        .first::<Seqnum>(&mut crate::data::db())
         .await
         .unwrap_or_default();
     Ok(sn)
@@ -136,7 +136,7 @@ pub async fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoom
         let room_ids = room_users::table
             .filter(room_users::user_id.eq(&user_id))
             .select(room_users::room_id)
-            .load::<OwnedRoomId>(&mut connect().await?)
+            .load::<OwnedRoomId>(&mut crate::data::db())
             .await?;
         user_rooms.push((user_id, room_ids));
     }
@@ -162,7 +162,7 @@ pub async fn join_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("join"))
         .select((room_users::event_id, room_users::event_sn))
-        .first::<(OwnedEventId, Seqnum)>(&mut connect().await?)
+        .first::<(OwnedEventId, Seqnum)>(&mut crate::data::db())
         .await?;
 
     join_sn_for_event(user_id, event_id, event_sn).await
@@ -236,7 +236,7 @@ pub async fn join_depth(user_id: &UserId, room_id: &RoomId) -> AppResult<u64> {
     events::table
         .filter(events::sn.eq(join_sn))
         .select(events::depth)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::data::db())
         .await
         .map(|depth| depth as u64)
         .map_err(Into::into)
@@ -247,7 +247,7 @@ pub async fn join_count(room_id: &RoomId) -> AppResult<i64> {
         .filter(room_users::membership.eq("join"))
         .select(room_users::user_id)
         .count()
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::data::db())
         .await?;
     Ok(count)
 }
@@ -298,7 +298,7 @@ pub async fn joined_after(
     .bind::<diesel::sql_types::Text, _>(user_id.as_str())
     .bind::<diesel::sql_types::BigInt, _>(utils::u64_to_i64(event_depth))
     .bind::<diesel::sql_types::Text, _>(event_id.as_str())
-    .get_result::<CausalJoinExists>(&mut connect().await?)
+    .get_result::<CausalJoinExists>(&mut crate::data::db())
     .await?;
 
     Ok(result.exists)
@@ -344,7 +344,7 @@ pub async fn server_user_joined_after(
     .bind::<diesel::sql_types::Text, _>(server_name.as_str())
     .bind::<diesel::sql_types::BigInt, _>(utils::u64_to_i64(event_depth))
     .bind::<diesel::sql_types::Text, _>(event_id.as_str())
-    .get_result::<CausalJoinExists>(&mut connect().await?)
+    .get_result::<CausalJoinExists>(&mut crate::data::db())
     .await?;
 
     Ok(result.exists)
@@ -356,7 +356,7 @@ pub async fn knock_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<i64> {
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("knock"))
         .select(room_users::event_sn)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -366,7 +366,7 @@ pub async fn knock_count(room_id: &RoomId) -> AppResult<i64> {
         .filter(room_users::membership.eq("knock"))
         .select(room_users::user_id)
         .count()
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::data::db())
         .await?;
     Ok(count)
 }
@@ -376,7 +376,7 @@ pub async fn leave_sn(user_id: &UserId, room_id: &RoomId) -> AppResult<i64> {
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::membership.eq("leave"))
         .select(room_users::event_sn)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -387,7 +387,7 @@ pub async fn is_invited(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq(MembershipState::Invite.to_string()));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    diesel_exists!(query, &mut crate::data::db()).map_err(Into::into)
 }
 
 #[tracing::instrument]
@@ -396,7 +396,7 @@ pub async fn is_banned(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq(MembershipState::Ban.to_string()));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    diesel_exists!(query, &mut crate::data::db()).map_err(Into::into)
 }
 
 #[tracing::instrument]
@@ -406,7 +406,7 @@ pub async fn is_left(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
         .filter(room_users::room_id.eq(room_id))
         .order_by(room_users::id.desc())
         .select(room_users::membership)
-        .first::<String>(&mut connect().await?)
+        .first::<String>(&mut crate::data::db())
         .await
         .map(|m| m == MembershipState::Leave.to_string())
         .unwrap_or(true);
@@ -419,7 +419,7 @@ pub async fn is_knocked(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq(MembershipState::Knock.to_string()));
-    diesel_exists!(query, &mut connect().await?).map_err(Into::into)
+    diesel_exists!(query, &mut crate::data::db()).map_err(Into::into)
 }
 #[tracing::instrument]
 pub async fn is_joined(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
@@ -428,7 +428,7 @@ pub async fn is_joined(user_id: &UserId, room_id: &RoomId) -> AppResult<bool> {
         .filter(room_users::room_id.eq(room_id))
         .order_by(room_users::id.desc())
         .select(room_users::membership)
-        .first::<String>(&mut connect().await?)
+        .first::<String>(&mut crate::data::db())
         .await
         .map(|m| m == MembershipState::Join.to_string())
         .unwrap_or(false);
@@ -446,7 +446,7 @@ pub async fn left_sn(room_id: &RoomId, user_id: &UserId) -> AppResult<Seqnum> {
                 .or(room_users::membership.eq("ban")),
         )
         .select(room_users::event_sn)
-        .first::<Seqnum>(&mut connect().await?)
+        .first::<Seqnum>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -461,7 +461,7 @@ pub async fn invite_state(
         .filter(room_users::room_id.eq(room_id))
         .filter(room_users::membership.eq(MembershipState::Invite.to_string()))
         .select(room_users::state_data)
-        .first::<Option<JsonValue>>(&mut connect().await?)
+        .first::<Option<JsonValue>>(&mut crate::data::db())
         .await
         .unwrap_or_default()
     {
@@ -478,7 +478,7 @@ pub async fn membership(user_id: &UserId, room_id: &RoomId) -> AppResult<Members
         .filter(room_users::room_id.eq(room_id))
         .order_by(room_users::id.desc())
         .select(room_users::membership)
-        .first::<String>(&mut connect().await?)
+        .first::<String>(&mut crate::data::db())
         .await;
     if let Ok(membership) = membership {
         Ok(membership.into())
@@ -519,7 +519,7 @@ pub async fn left_rooms(
     };
     let room_event_ids = query
         .select((room_users::room_id, room_users::event_id))
-        .load::<(OwnedRoomId, OwnedEventId)>(&mut connect().await?)
+        .load::<(OwnedRoomId, OwnedEventId)>(&mut crate::data::db())
         .await
         .map(|rows| {
             let mut map: HashMap<OwnedRoomId, Vec<OwnedEventId>> = HashMap::new();
@@ -533,7 +533,7 @@ pub async fn left_rooms(
         let events = event_datas::table
             .filter(event_datas::event_id.eq_any(&event_ids))
             .select(event_datas::json_data)
-            .load::<JsonValue>(&mut connect().await?)
+            .load::<JsonValue>(&mut crate::data::db())
             .await?
             .into_iter()
             .filter_map(|value| RawJson::<AnySyncStateEvent>::from_value(&value).ok())
@@ -547,7 +547,7 @@ pub async fn get_tags(user_id: &UserId, room_id: &RoomId) -> AppResult<Vec<DbRoo
     let tags = room_tags::table
         .filter(room_tags::user_id.eq(user_id))
         .filter(room_tags::room_id.eq(room_id))
-        .load::<DbRoomTag>(&mut connect().await?)
+        .load::<DbRoomTag>(&mut crate::data::db())
         .await?;
     Ok(tags)
 }
@@ -557,7 +557,7 @@ pub async fn local_users(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
         .filter(room_users::membership.eq("join"))
         .select(room_users::user_id)
         .distinct()
-        .load::<OwnedUserId>(&mut connect().await?)
+        .load::<OwnedUserId>(&mut crate::data::db())
         .await?;
     let users = users
         .into_iter()
@@ -617,7 +617,7 @@ pub async fn copy_room_tags_and_direct_to_room(
         };
         diesel::insert_into(room_tags::table)
             .values(&new_tag)
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
     }
     Ok(())

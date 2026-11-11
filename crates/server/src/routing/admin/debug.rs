@@ -6,7 +6,7 @@
 use std::time::{Instant, SystemTime};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use reqwest::Url;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
@@ -270,7 +270,7 @@ async fn latest_pdu(room_id: &RoomId) -> AppResult<Option<PduEvent>> {
         .filter(event_datas::room_id.eq(room_id))
         .order(event_datas::event_sn.desc())
         .select(event_datas::event_id)
-        .first::<OwnedEventId>(&mut crate::data::connect().await?)
+        .first::<OwnedEventId>(&mut crate::data::db())
         .await
         .optional()?;
     match event_id {

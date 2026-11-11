@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use diesel_async::{AsyncConnection, RunQueryDsl, SimpleAsyncConnection};
+use diesel_async::{AsyncConnection, SimpleAsyncConnection};
+use horme::RunQueryDsl;
 use salvo::prelude::*;
 use salvo::test::{ResponseExt, TestClient};
 use serde_json::{Value, json};
@@ -82,7 +83,7 @@ fn review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows() {
         configure();
         // Roll back the complete down/up drill: exercise a genuine legacy row,
         // without changing the migration ledger or leaving test data behind.
-        let mut connection = data::connect().await.unwrap();
+        let mut connection = data::checkout().await.unwrap();
         let result = connection.transaction::<(), AppError, _>(async |conn| {
             conn.batch_execute(include_str!("../../data/migrations/2026-11-10-010000_outgoing_enqueue_time/down.sql")).await?;
             conn.batch_execute("INSERT INTO outgoing_requests(kind,appservice_id,state) VALUES ('appservice','legacy','created')").await?;
@@ -106,7 +107,7 @@ fn review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows() {
             ),
             (0, 0, None)
         );
-        let mut connection = data::connect().await.unwrap();
+        let mut connection = data::checkout().await.unwrap();
         connection.batch_execute("INSERT INTO outgoing_requests(kind,appservice_id,state,retry_count,enqueued_at) VALUES
             ('appservice','ops-a','created',0,floor(extract(epoch FROM clock_timestamp())*1000)::bigint-10000),
             ('appservice','ops-b','pending',2,floor(extract(epoch FROM clock_timestamp())*1000)::bigint-20000),
@@ -134,7 +135,7 @@ fn review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows() {
         );
 
         // Schema unavailability is a query fault, not a simulated network outage.
-        data::connect()
+        data::checkout()
             .await
             .unwrap()
             .batch_execute("ALTER TABLE outgoing_requests RENAME TO unavailable_ops_requests")
@@ -147,7 +148,7 @@ fn review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows() {
             sampler.sample(QUEUE_CACHE_TTL).await.state,
             QueueSampleState::Stale
         );
-        data::connect()
+        data::checkout()
             .await
             .unwrap()
             .batch_execute("ALTER TABLE unavailable_ops_requests RENAME TO outgoing_requests")
@@ -165,13 +166,13 @@ fn review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows() {
             #[diesel(sql_type = diesel::sql_types::Integer)]
             pid: i32,
         }
-        let mut victim = data::connect().await.unwrap();
+        let mut victim = data::checkout().await.unwrap();
         let pid = diesel::sql_query("SELECT pg_backend_pid() AS pid")
             .get_result::<Pid>(&mut victim)
             .await
             .unwrap()
             .pid;
-        let mut control = data::coordination_connect().await.unwrap();
+        let mut control = data::coordination_connect();
         diesel::sql_query("SELECT pg_terminate_backend($1)")
             .bind::<diesel::sql_types::Integer, _>(pid)
             .execute(&mut control)
@@ -180,7 +181,7 @@ fn review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows() {
         assert!(victim.batch_execute("SELECT 1").await.is_err());
         drop(victim);
         drop(control);
-        data::connect()
+        data::checkout()
             .await
             .unwrap()
             .batch_execute("SELECT 1")
@@ -190,10 +191,10 @@ fn review_outbound_diagnostics_tracks_queue_pool_failures_and_restored_rows() {
         let before = data::telemetry::QUERY_POOL_WAIT.snapshot();
         let mut held = Vec::new();
         for _ in 0..data::status().max_size {
-            held.push(data::connect().await.unwrap());
+            held.push(data::checkout().await.unwrap());
         }
         assert!(
-            tokio::time::timeout(Duration::from_millis(20), data::connect())
+            tokio::time::timeout(Duration::from_millis(20), data::checkout())
                 .await
                 .is_err()
         );
@@ -323,11 +324,11 @@ async fn restart_child(phase: &str) {
         let event =
             diesel::sql_query("SELECT id FROM events WHERE room_id=$1 AND ty='m.room.create'")
                 .bind::<diesel::sql_types::Text, _>(created["room_id"].as_str().unwrap())
-                .get_result::<Event>(&mut data::connect().await.unwrap())
+                .get_result::<Event>(&mut crate::data::db())
                 .await
                 .unwrap();
         crate::appservice::register_appservice(serde_json::from_value(json!({"id":"ops-restart","url":std::env::var("PALPO_OPS_PEER_URL").unwrap(),"as_token":"ops-as-token","hs_token":"ops-hs-token","sender_localpart":"bridge","namespaces":{}})).unwrap()).await.unwrap();
-        let mut connection = data::connect().await.unwrap();
+        let mut connection = data::connect();
         for _ in 0..3 {
             diesel::sql_query("INSERT INTO outgoing_requests(kind,appservice_id,pdu_id,state) VALUES ('appservice','ops-restart',$1,'pending')").bind::<diesel::sql_types::Text,_>(&event.id).execute(&mut connection).await.unwrap();
         }
@@ -410,7 +411,7 @@ async fn queue_ids() -> Vec<i64> {
         id: i64,
     }
     diesel::sql_query("SELECT id FROM outgoing_requests ORDER BY id")
-        .load::<Row>(&mut data::connect().await.unwrap())
+        .load::<Row>(&mut crate::data::db())
         .await
         .unwrap()
         .into_iter()

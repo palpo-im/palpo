@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use palpo_core::Seqnum;
 
 use crate::core::client::filter::UrlFilter;
@@ -16,7 +16,6 @@ use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonObject;
 use crate::core::serde::canonical_json::CanonicalJsonValue;
-use crate::data::connect;
 use crate::data::full_text_search::*;
 use crate::data::schema::*;
 use crate::event::BatchToken;
@@ -229,7 +228,7 @@ async fn searchable_rooms(user_id: &UserId) -> AppResult<Vec<OwnedRoomId>> {
         .filter(room_users::membership.eq("join"))
         .select(room_users::room_id)
         .distinct()
-        .load(&mut connect().await?)
+        .load(&mut crate::data::db())
         .await?)
 }
 
@@ -300,12 +299,12 @@ pub async fn search_pdus(
         ))
         .limit(limit as i64);
     let items = data_query
-        .load::<(f32, OwnedEventId, i64, i64)>(&mut connect().await?)
+        .load::<(f32, OwnedEventId, i64, i64)>(&mut crate::data::db())
         .await?;
     let count_query = searchable_events(&room_ids, criteria, &keys);
     #[cfg(feature = "unstable-msc1763")]
     let count_query = crate::retention::filter_search(count_query, &room_ids).await?;
-    let count: i64 = count_query.count().first(&mut connect().await?).await?;
+    let count: i64 = count_query.count().first(&mut crate::data::db()).await?;
     let next_batch = if items.len() < limit {
         None
     } else {
@@ -569,7 +568,7 @@ pub async fn save_pdu(pdu: &SnPduEvent, pdu_json: &CanonicalJsonObject) -> AppRe
         .bind::<diesel::sql_types::Int8, _>(pdu.origin_server_ts)
         .bind::<diesel::sql_types::Text, _>(vector)
         .bind::<diesel::sql_types::Int8, _>(pdu.origin_server_ts)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
 
     Ok(())
@@ -763,7 +762,7 @@ mod tests {
 
         crate::test_database::init();
         let room_ids = vec![room("!search:example.org")];
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         for (id, sn, ts, text, sender) in [
             ("$search-a", 10, 300, "needle", "@alice:example.org"),
             (

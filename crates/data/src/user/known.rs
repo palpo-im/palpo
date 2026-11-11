@@ -7,12 +7,12 @@
 
 use diesel::prelude::*;
 use diesel::sql_types::{Array, BigInt, Nullable, Text};
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Debug, Clone, Default)]
 pub struct KnownUsersFilter {
@@ -103,7 +103,7 @@ pub async fn list_known_users(filter: &KnownUsersFilter) -> DataResult<(Vec<Know
         "ASC"
     };
 
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     let count_sql =
         format!("SELECT COUNT(DISTINCT user_id) AS count FROM room_users {KNOWN_USERS_WHERE}");
     let total = diesel::sql_query(count_sql)
@@ -163,7 +163,7 @@ pub async fn member_profiles(user_ids: &[String]) -> DataResult<Vec<KnownUserMem
         ORDER BY ru.user_id, (ru.membership = 'join') DESC, ru.event_sn DESC",
     )
     .bind::<Array<Text>, _>(user_ids)
-    .load::<KnownUserMemberProfile>(&mut connect().await?)
+    .load::<KnownUserMemberProfile>(&mut crate::db())
     .await?;
     Ok(rows)
 }
@@ -190,7 +190,7 @@ pub async fn known_user_rooms(user_id: &UserId) -> DataResult<Vec<KnownUserRoom>
             room_users::event_id,
             room_users::created_at,
         ))
-        .load::<(OwnedRoomId, String, OwnedUserId, OwnedEventId, UnixMillis)>(&mut connect().await?)
+        .load::<(OwnedRoomId, String, OwnedUserId, OwnedEventId, UnixMillis)>(&mut crate::db())
         .await?;
     Ok(rows
         .into_iter()

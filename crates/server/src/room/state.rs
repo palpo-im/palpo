@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -42,7 +43,7 @@ pub async fn server_joined_rooms(server_name: &ServerName) -> AppResult<Vec<Owne
     room_joined_servers::table
         .filter(room_joined_servers::server_id.eq(server_name))
         .select(room_joined_servers::room_id)
-        .load::<OwnedRoomId>(&mut connect().await?)
+        .load::<OwnedRoomId>(&mut crate::data::db())
         .await
         .map_err(Into::into)
 }
@@ -154,7 +155,6 @@ async fn force_state_inner(
         users.push(invitee.to_owned());
     }
     let published = connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             crate::data::user::lock_invite_state_write(conn, &users, room_id).await?;
             if let Some((invitee, sender)) = withdrawal {
@@ -207,7 +207,6 @@ async fn force_state_inner(
 #[tracing::instrument]
 pub async fn set_room_state(room_id: &RoomId, frame_id: i64) -> AppResult<()> {
     connect()
-        .await?
         .transaction::<_, crate::AppError, _>(async |conn| {
             crate::data::user::lock_invite_room_write(conn, room_id).await?;
             set_room_state_with_conn(conn, room_id, frame_id).await
@@ -431,7 +430,7 @@ pub async fn summary_pdus(event: &PduEvent) -> AppResult<Vec<Box<RawJsonValue>>>
             .filter(room_users::user_server_id.eq(policy.via.as_str()))
             .filter(room_users::membership.eq("join"))
             .select(room_users::event_id)
-            .first::<OwnedEventId>(&mut connect().await?)
+            .first::<OwnedEventId>(&mut crate::data::db())
             .await
             .optional()?;
         if let Some(member_id) = member_id
@@ -467,7 +466,7 @@ pub async fn get_forward_extremities(room_id: &RoomId) -> AppResult<Vec<OwnedEve
         .filter(event_forward_extremities::room_id.eq(room_id))
         .select(event_forward_extremities::event_id)
         .distinct()
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?
         .into_iter()
         .collect();
@@ -488,7 +487,7 @@ where
             .filter(event_forward_extremities::room_id.eq(room_id))
             .filter(event_forward_extremities::event_id.ne_all(&event_ids)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::data::db())
     .await?;
     for event_id in event_ids {
         diesel::insert_into(event_forward_extremities::table)
@@ -497,7 +496,7 @@ where
                 event_forward_extremities::event_id.eq(event_id),
             ))
             .on_conflict_do_nothing()
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
     }
     Ok(())
@@ -508,7 +507,7 @@ pub async fn get_backward_extremities(room_id: &RoomId) -> AppResult<Vec<OwnedEv
         .filter(event_backward_extremities::room_id.eq(room_id))
         .select(event_backward_extremities::event_id)
         .distinct()
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?
         .into_iter()
         .collect();
@@ -523,7 +522,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                 event_backward_extremities::event_id.eq(&pdu.event_id),
             ))
             .on_conflict_do_nothing()
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
     } else {
         let existing_ids = events::table
@@ -531,7 +530,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
             .filter(events::id.eq_any(&pdu.prev_events))
             .filter(events::is_outlier.eq(false))
             .select(events::id)
-            .load::<OwnedEventId>(&mut connect().await?)
+            .load::<OwnedEventId>(&mut crate::data::db())
             .await?;
         let mut missing_ids = Vec::new();
         for event_id in &pdu.prev_events {
@@ -553,7 +552,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                     .filter(event_backward_extremities::room_id.eq(&pdu.room_id))
                     .filter(event_backward_extremities::event_id.eq(&pdu.event_id)),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
 
             diesel::delete(
@@ -561,7 +560,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                     .filter(timeline_gaps::room_id.eq(&pdu.room_id))
                     .filter(timeline_gaps::event_sn.eq(pdu.event_sn)),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
         } else {
             for event_id in &missing_ids {
@@ -571,7 +570,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                         event_backward_extremities::event_id.eq(event_id),
                     ))
                     .on_conflict_do_nothing()
-                    .execute(&mut connect().await?)
+                    .execute(&mut crate::data::db())
                     .await?;
             }
             diesel::insert_into(event_backward_extremities::table)
@@ -580,7 +579,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                     event_backward_extremities::event_id.eq(&pdu.event_id),
                 ))
                 .on_conflict_do_nothing()
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
             diesel::insert_into(timeline_gaps::table)
                 .values(NewDbTimelineGap {
@@ -592,7 +591,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                 // predecessor. Keep the existing gap when they race or retry.
                 .on_conflict((timeline_gaps::room_id, timeline_gaps::event_sn))
                 .do_nothing()
-                .execute(&mut connect().await?)
+                .execute(&mut crate::data::db())
                 .await?;
         }
     }
@@ -600,7 +599,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
     let existing_ids = events::table
         .filter(events::id.eq_any(&pdu.prev_events))
         .select(events::id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?;
     let missing_ids: Vec<OwnedEventId> = pdu
         .prev_events
@@ -618,7 +617,7 @@ pub async fn update_backward_extremities(pdu: &SnPduEvent) -> AppResult<()> {
                 missing_id: missing_id.clone(),
             })
             .on_conflict_do_nothing()
-            .execute(&mut connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
     }
 
@@ -930,7 +929,7 @@ async fn server_memberships_at(
         .filter(room_state_fields::id.eq_any(field_ids))
         .filter(room_state_fields::event_ty.eq(StateEventType::RoomMember))
         .select((room_state_fields::id, room_state_fields::state_key))
-        .load::<(i64, String)>(&mut connect().await?)
+        .load::<(i64, String)>(&mut crate::data::db())
         .await?;
     let event_ids = member_fields
         .into_iter()
@@ -955,7 +954,7 @@ async fn server_memberships_at(
     event_datas::table
         .filter(event_datas::event_id.eq_any(event_ids))
         .select(event_datas::json_data)
-        .load::<JsonValue>(&mut connect().await?)
+        .load::<JsonValue>(&mut crate::data::db())
         .await
         .map(|events| {
             StateBefore::Resolved(
@@ -1260,7 +1259,7 @@ pub async fn get_user_state(
         .filter(room_users::user_id.eq(user_id))
         .filter(room_users::room_id.eq(room_id))
         .select(room_users::state_data)
-        .first::<Option<JsonValue>>(&mut connect().await?)
+        .first::<Option<JsonValue>>(&mut crate::data::db())
         .await
         .optional()?
         .flatten()

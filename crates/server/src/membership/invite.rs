@@ -153,7 +153,6 @@ pub(crate) async fn invited_rooms_for_sync(
     #[cfg(feature = "unstable-msc4494")]
     let inventory = loop {
         let inventory = data::connect()
-            .await?
             .build_transaction()
             .read_only()
             .read_committed()
@@ -244,13 +243,12 @@ async fn admit_pending_invites(
         room_invite_admissions, room_invite_delivery_batches as batches, room_users,
     };
     use diesel::{ExpressionMethods, QueryDsl};
-    use diesel_async::{AsyncConnection, RunQueryDsl};
+    use horme::RunQueryDsl;
 
     // Consistent insert order prevents concurrent multi-room syncs from deadlocking.
     candidates.sort_unstable_by_key(|(id, _)| *id);
     candidates.dedup();
     data::connect()
-        .await?
         .transaction::<_, crate::AppError, _>(async |conn| {
             data::user::lock_invite_user_write(conn, user_id).await?;
             // A concurrent join/leave can replace the pending membership. Hold its
@@ -344,9 +342,9 @@ pub(crate) async fn acknowledge_invite_delivery(
         use data::schema::{
             room_invite_admissions as admissions, room_invite_delivery_batches as batches,
         };
-        use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-        use diesel_async::{AsyncConnection, RunQueryDsl};
-        data::connect().await?.transaction::<_, crate::AppError, _>(async |conn| {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use horme::{OptionalExtension as _, RunQueryDsl};
+        data::connect().transaction::<_, crate::AppError, _>(async |conn| {
             data::user::lock_invite_user_write(conn, user_id).await?;
             let ids = batches::table.find(batch)
                 .filter(batches::user_id.eq(user_id))
@@ -601,7 +599,7 @@ pub async fn invite_user(
 
 #[cfg(test)]
 mod tests {
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
     use serde_json::json;
 
     use super::*;
@@ -689,7 +687,7 @@ mod tests {
                 "content": {"membership": "invite"}}])),
                 created_at: crate::core::UnixMillis::now(),
             })
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let builder = PduBuilder::state(
@@ -850,7 +848,7 @@ mod tests {
                         "content": {"membership": "invite"}}])),
                     created_at: crate::core::UnixMillis::now(),
                 })
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
             assert_eq!(
@@ -890,7 +888,7 @@ mod tests {
             let initial = capture_cursor(&user, &device, sliding).await.unwrap();
             // A separate connection models another server instance. Its sequence
             // allocation is immediately visible, while the inbox row is not.
-            let mut writer = data::connect().await.unwrap();
+            let mut writer = data::checkout().await.unwrap();
             diesel::sql_query("BEGIN")
                 .execute(&mut writer)
                 .await
@@ -939,7 +937,7 @@ mod tests {
                 .filter(device_inboxes::occur_sn.ge(initial + 1))
                 .filter(device_inboxes::occur_sn.lt(snapshot.until_sn + 1))
                 .select(device_inboxes::occur_sn)
-                .load::<i64>(&mut data::connect().await.unwrap())
+                .load::<i64>(&mut crate::data::db())
                 .await
                 .unwrap();
             assert_eq!(delivered, vec![pending_sn]);
@@ -1050,7 +1048,7 @@ mod tests {
                         has_auth_chain_index: false,
                         created_at: crate::core::UnixMillis::now(),
                     })
-                    .execute(&mut data::connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
             }
@@ -1088,7 +1086,7 @@ mod tests {
                         state_data: Some(json!([])),
                         created_at: crate::core::UnixMillis::now(),
                     })
-                    .execute(&mut data::connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
             }
@@ -1186,7 +1184,7 @@ mod tests {
                                 .select(room_users::id)
                         )
                     )
-                    .load::<i64>(&mut data::connect().await.unwrap())
+                    .load::<i64>(&mut crate::data::db())
                     .await
                     .unwrap()
                     .is_empty()
@@ -1198,7 +1196,7 @@ mod tests {
                 )
                 .filter(room_users::user_id.eq(&recipient))
                 .select(room_invite_admissions::admitted_sn)
-                .load::<i64>(&mut data::connect().await.unwrap())
+                .load::<i64>(&mut crate::data::db())
                 .await
                 .unwrap();
             assert_eq!(
@@ -1246,7 +1244,7 @@ mod tests {
                         room_invite_admissions::admitted_sn,
                         room_invite_admissions::delivered_devices,
                     ))
-                    .first::<(i64, serde_json::Value)>(&mut data::connect().await.unwrap())
+                    .first::<(i64, serde_json::Value)>(&mut crate::data::db())
                     .await
                     .unwrap();
                 assert_eq!(admitted_sn, before.until_sn);
@@ -1278,8 +1276,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_invite_snapshot_does_not_cross_unpublished_ordinary_events() {
-        use diesel_async::AsyncConnection;
-
         use crate::core::serde::CanonicalJsonObject;
         use crate::data::schema::rooms;
 
@@ -1308,7 +1304,7 @@ mod tests {
                     has_auth_chain_index: false,
                     created_at: crate::core::UnixMillis::now(),
                 })
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
             let captured = stream.capture_cursor(&user, &device).await.unwrap();
@@ -1341,8 +1337,6 @@ mod tests {
                     .is_empty()
             );
             data::connect()
-                .await
-                .unwrap()
                 .transaction::<_, crate::AppError, _>(async |conn| {
                     crate::event::sticky::promote_to_timeline_with_conn(conn, &stored).await
                 })
@@ -1386,7 +1380,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: crate::core::UnixMillis::now(),
             })
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         diesel::insert_into(room_users::table)
@@ -1405,7 +1399,7 @@ mod tests {
                 state_data: Some(json!([])),
                 created_at: crate::core::UnixMillis::now(),
             })
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         data::user::set_data(
@@ -1509,8 +1503,6 @@ mod tests {
     async fn database_invite_snapshot_retries_new_senders_while_waiting_for_locks() {
         use std::time::Duration;
 
-        use diesel_async::AsyncConnection;
-
         use crate::data::schema::{room_users, rooms};
 
         crate::test_database::init();
@@ -1522,7 +1514,7 @@ mod tests {
                 .sql(", ")
                 .bind::<diesel::sql_types::BigInt, _>(0x494e5655_i64)
                 .sql(")")
-                .get_result(&mut data::connect().await.unwrap())
+                .get_result(&mut crate::data::db())
                 .await
                 .unwrap()
         }
@@ -1544,7 +1536,7 @@ mod tests {
                     has_auth_chain_index: false,
                     created_at: crate::core::UnixMillis::now(),
                 })
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -1558,7 +1550,6 @@ mod tests {
         .unwrap();
         async fn store_invite(recipient: &UserId, sender: &UserId, room: &RoomId) -> AppResult<()> {
             data::connect()
-                .await?
                 .transaction::<_, crate::AppError, _>(async |conn| {
                     data::user::lock_invite_user_write(conn, recipient).await?;
                     diesel::insert_into(room_users::table)
@@ -1592,7 +1583,7 @@ mod tests {
                 .await
         }
         store_invite(&recipient, &sender, &first).await.unwrap();
-        let mut blocker = data::connect().await.unwrap();
+        let mut blocker = data::checkout().await.unwrap();
         diesel::sql_query("BEGIN")
             .execute(&mut blocker)
             .await
@@ -1615,7 +1606,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        let mut new_blocker = data::connect().await.unwrap();
+        let mut new_blocker = data::checkout().await.unwrap();
         diesel::sql_query("BEGIN")
             .execute(&mut new_blocker)
             .await
@@ -1681,7 +1672,7 @@ mod tests {
         // Pause a real force_state caller in its statistics side effect. Before
         // the fix, this ran after each committed membership but before the frame.
         // It must now run only after the complete resolved state is published.
-        data::connect()
+        data::checkout()
             .await
             .unwrap()
             .batch_execute(
@@ -1788,7 +1779,7 @@ mod tests {
                             state_data: None,
                             created_at: crate::core::UnixMillis::now(),
                         })
-                        .execute(&mut data::connect().await.unwrap())
+                        .execute(&mut crate::data::db())
                         .await
                         .unwrap();
                 }
@@ -1815,7 +1806,7 @@ mod tests {
                     created_at: crate::core::UnixMillis::now(),
                 })
                 .returning(room_users::id)
-                .get_result::<i64>(&mut data::connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap();
             data::user::set_data(
@@ -1837,7 +1828,7 @@ mod tests {
             let delta = state::save_state(&shared, Arc::new(resolved))
                 .await
                 .unwrap();
-            let mut blocker = data::connect().await.unwrap();
+            let mut blocker = data::checkout().await.unwrap();
             blocker
                 .batch_execute("BEGIN; SELECT pg_advisory_xact_lock(517, 4494)")
                 .await
@@ -1849,7 +1840,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(3), async {
                 loop {
                     let waiting = diesel::sql_query("SELECT COUNT(*) AS count FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND classid = 517 AND objid = 4494 AND objsubid = 2")
-                        .get_result::<Waiting>(&mut data::connect().await.unwrap()).await.unwrap();
+                        .get_result::<Waiting>(&mut crate::data::db()).await.unwrap();
                     if waiting.count > 0 { break; }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
@@ -1880,7 +1871,7 @@ mod tests {
             let admitted = room_invite_admissions::table
                 .find(id)
                 .count()
-                .get_result::<i64>(&mut data::connect().await.unwrap())
+                .get_result::<i64>(&mut crate::data::db())
                 .await
                 .unwrap();
             assert_eq!(admitted, i64::from(case == "invite"));
@@ -1888,7 +1879,7 @@ mod tests {
                 rooms::table
                     .find(&shared)
                     .select(rooms::state_frame_id)
-                    .first::<Option<i64>>(&mut data::connect().await.unwrap())
+                    .first::<Option<i64>>(&mut crate::data::db())
                     .await
                     .unwrap(),
                 Some(delta.frame_id)
@@ -1923,7 +1914,7 @@ mod tests {
             .await
             .unwrap();
             drop(guard);
-            data::connect().await.unwrap().batch_execute(
+            data::checkout().await.unwrap().batch_execute(
                 "CREATE FUNCTION pr517_fail_force_frame() RETURNS trigger AS $$
                  BEGIN IF NEW.id LIKE '!force_target_%' THEN RAISE EXCEPTION 'pr517 test failure'; END IF;
                  RETURN NEW; END $$ LANGUAGE plpgsql;
@@ -1935,12 +1926,12 @@ mod tests {
                     .await
                     .is_err()
             );
-            data::connect().await.unwrap().batch_execute("DROP TRIGGER pr517_fail_force_frame ON rooms; DROP FUNCTION pr517_fail_force_frame()").await.unwrap();
+            data::checkout().await.unwrap().batch_execute("DROP TRIGGER pr517_fail_force_frame ON rooms; DROP FUNCTION pr517_fail_force_frame()").await.unwrap();
             assert_eq!(
                 room_users::table
                     .find(id)
                     .select(room_users::membership)
-                    .first::<String>(&mut data::connect().await.unwrap())
+                    .first::<String>(&mut crate::data::db())
                     .await
                     .unwrap(),
                 "invite"
@@ -1949,7 +1940,7 @@ mod tests {
                 rooms::table
                     .find(&target)
                     .select(rooms::state_frame_id)
-                    .first::<Option<i64>>(&mut data::connect().await.unwrap())
+                    .first::<Option<i64>>(&mut crate::data::db())
                     .await
                     .unwrap(),
                 None
@@ -1958,13 +1949,13 @@ mod tests {
                 room_invite_admissions::table
                     .find(id)
                     .count()
-                    .get_result::<i64>(&mut data::connect().await.unwrap())
+                    .get_result::<i64>(&mut crate::data::db())
                     .await
                     .unwrap(),
                 admitted
             );
         }
-        data::connect().await.unwrap().batch_execute("DROP TRIGGER pr517_pause_force_statistics ON stats_room_currents; DROP FUNCTION pr517_pause_force_statistics()").await.unwrap();
+        data::checkout().await.unwrap().batch_execute("DROP TRIGGER pr517_pause_force_statistics ON stats_room_currents; DROP FUNCTION pr517_pause_force_statistics()").await.unwrap();
     }
 
     #[cfg(feature = "unstable-msc4494")]
@@ -2114,7 +2105,7 @@ mod tests {
                 events::table
                     .find(&event)
                     .select(events::is_outlier)
-                    .first::<bool>(&mut data::connect().await.unwrap())
+                    .first::<bool>(&mut crate::data::db())
                     .await
                     .unwrap()
             );
@@ -2122,7 +2113,7 @@ mod tests {
                 room_users::table
                     .filter(room_users::room_id.eq(&room))
                     .count()
-                    .get_result::<i64>(&mut data::connect().await.unwrap())
+                    .get_result::<i64>(&mut crate::data::db())
                     .await
                     .unwrap(),
                 0
@@ -2131,7 +2122,7 @@ mod tests {
                 rooms::table
                     .find(&room)
                     .select(rooms::state_frame_id)
-                    .first::<Option<i64>>(&mut data::connect().await.unwrap())
+                    .first::<Option<i64>>(&mut crate::data::db())
                     .await
                     .unwrap(),
                 None
@@ -2151,7 +2142,7 @@ mod tests {
         let memberships = room_users::table
             .filter(room_users::room_id.eq(&room))
             .select((room_users::user_id, room_users::membership))
-            .load::<(OwnedUserId, String)>(&mut data::connect().await.unwrap())
+            .load::<(OwnedUserId, String)>(&mut crate::data::db())
             .await
             .unwrap();
         assert!(memberships.contains(&(creator.clone(), "join".into())));
@@ -2265,7 +2256,7 @@ mod tests {
             .filter(room_users::room_id.eq(&room))
             .filter(room_users::user_id.eq(&user))
             .select(room_users::event_id)
-            .first::<OwnedEventId>(&mut data::connect().await.unwrap())
+            .first::<OwnedEventId>(&mut crate::data::db())
             .await
             .unwrap();
         let mut historical_leave = timeline::get_pdu(&auth[4]).await.unwrap();
@@ -2287,7 +2278,7 @@ mod tests {
                 .filter(room_users::room_id.eq(&room))
                 .filter(room_users::user_id.eq(&user))
                 .select(room_users::event_id)
-                .first::<OwnedEventId>(&mut data::connect().await.unwrap())
+                .first::<OwnedEventId>(&mut crate::data::db())
                 .await
                 .unwrap(),
             current_member,
@@ -2443,7 +2434,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: crate::core::UnixMillis::now(),
             })
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         diesel::insert_into(rooms::table)
@@ -2455,7 +2446,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: crate::core::UnixMillis::now(),
             })
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         for (i, member) in [&user, &inviter].into_iter().enumerate() {
@@ -2475,7 +2466,7 @@ mod tests {
                     state_data: None,
                     created_at: crate::core::UnixMillis::now(),
                 })
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -2501,7 +2492,7 @@ mod tests {
                 created_at: crate::core::UnixMillis::now(),
             })
             .returning(room_users::id)
-            .get_result::<i64>(&mut data::connect().await.unwrap())
+            .get_result::<i64>(&mut crate::data::db())
             .await
             .unwrap();
 
@@ -2523,7 +2514,7 @@ mod tests {
             .await
             .unwrap();
             data::user::set_ignored_users(&user, &[]).await.unwrap();
-            let mut reader = data::connect().await.unwrap();
+            let mut reader = data::checkout().await.unwrap();
             diesel::sql_query("BEGIN ISOLATION LEVEL READ COMMITTED")
                 .execute(&mut reader)
                 .await
@@ -2547,7 +2538,7 @@ mod tests {
             .unwrap();
 
             // Another device can hold the shared decision lock concurrently.
-            let mut other = data::connect().await.unwrap();
+            let mut other = data::checkout().await.unwrap();
             diesel::sql_query("BEGIN")
                 .execute(&mut other)
                 .await
@@ -2746,7 +2737,7 @@ mod tests {
                     state_data: Some(json!([])),
                     created_at: crate::core::UnixMillis::now(),
                 })
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -2759,7 +2750,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: crate::core::UnixMillis::now(),
             })
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         // Membership alone does not suffice when the join rule is unavailable.
@@ -2784,22 +2775,22 @@ mod tests {
             let mut fresh_invite = room_users::table
                 .filter(room_users::room_id.eq(&target))
                 .filter(room_users::user_id.eq(&invitee))
-                .first::<data::room::DbRoomUser>(&mut data::connect().await.unwrap())
+                .first::<data::room::DbRoomUser>(&mut crate::data::db())
                 .await
                 .unwrap();
             diesel::delete(room_users::table.find(fresh_invite.id))
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
             fresh_invite.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
                 "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
             )
-            .get_result(&mut data::connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
             diesel::insert_into(room_users::table)
                 .values(&fresh_invite)
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
             let raw = json!({
@@ -2859,7 +2850,7 @@ mod tests {
                 room_invite_admissions::table
                     .filter(room_invite_admissions::room_user_id.eq(fresh_invite.id))
                     .select(room_invite_admissions::room_user_id)
-                    .load::<i64>(&mut data::connect().await.unwrap())
+                    .load::<i64>(&mut crate::data::db())
                     .await
                     .unwrap()
                     .is_empty(),
@@ -2905,7 +2896,7 @@ mod tests {
                             .filter(room_users::user_id.eq(member)),
                     )
                     .set(room_users::membership.eq("leave"))
-                    .execute(&mut data::connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                     assert_blocked(ensure_invite_allowed(&invitee, &inviter).await);
@@ -2924,7 +2915,7 @@ mod tests {
                         room_users::membership.eq("join"),
                         room_users::event_sn.eq(join_sn),
                     ))
-                    .execute(&mut data::connect().await.unwrap())
+                    .execute(&mut crate::data::db())
                     .await
                     .unwrap();
                     assert_eq!(
@@ -2987,17 +2978,17 @@ mod tests {
         let mut delayed = room_users::table
             .filter(room_users::user_id.eq(&invitee))
             .filter(room_users::room_id.eq(&target))
-            .first::<data::room::DbRoomUser>(&mut data::connect().await.unwrap())
+            .first::<data::room::DbRoomUser>(&mut crate::data::db())
             .await
             .unwrap();
         diesel::delete(room_users::table.find(delayed.id))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         delayed.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
             "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
         )
-        .get_result(&mut data::connect().await.unwrap())
+        .get_result(&mut crate::data::db())
         .await
         .unwrap();
         delayed.event_id = "$membership_delayed_invite:example.org".try_into().unwrap();
@@ -3010,7 +3001,7 @@ mod tests {
         let delayed_id = delayed.id;
         diesel::insert_into(room_users::table)
             .values(delayed)
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let snapshot =
@@ -3027,7 +3018,7 @@ mod tests {
         let first_delivery = room_invite_admissions::table
             .find(delayed_id)
             .select(room_invite_admissions::admitted_sn)
-            .first::<i64>(&mut data::connect().await.unwrap())
+            .first::<i64>(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -3134,7 +3125,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: crate::core::UnixMillis::now(),
             })
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         data::user::set_data(
@@ -3181,7 +3172,7 @@ mod tests {
                     state_data: None,
                     created_at: crate::core::UnixMillis::now(),
                 })
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -3220,7 +3211,7 @@ mod tests {
                 has_auth_chain_index: false,
                 created_at: crate::core::UnixMillis::now(),
             })
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         for (i, member) in [&invitee, &inviter].into_iter().enumerate() {
@@ -3242,7 +3233,7 @@ mod tests {
                     state_data: None,
                     created_at: crate::core::UnixMillis::now(),
                 })
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -3292,7 +3283,7 @@ mod tests {
                     state_data: Some(json!([])),
                     created_at: crate::core::UnixMillis::now(),
                 })
-                .execute(&mut data::connect().await.unwrap())
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }
@@ -3330,7 +3321,7 @@ mod tests {
                 room_users::event_id.eq(&profile.event_id),
                 room_users::event_sn.eq(profile.event_sn),
             ))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
             assert_eq!(room::user::join_sn(member, &mutual).await.unwrap(), join_sn);
@@ -3372,7 +3363,7 @@ mod tests {
         // A second qualifying room must not re-admit already visible invitations.
         diesel::update(room_users::table.filter(room_users::room_id.eq(&malformed)))
             .set(room_users::membership.eq("leave"))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let raw = json!({
@@ -3408,7 +3399,7 @@ mod tests {
                 room_users::membership.eq("join"),
                 room_users::event_sn.eq(join_sn),
             ))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
             assert!(
@@ -3421,13 +3412,13 @@ mod tests {
         assert_eq!(invited_rooms_for_sync(&invitee, 0).await.unwrap().len(), 8);
         diesel::update(room_users::table.filter(room_users::room_id.eq(&malformed)))
             .set(room_users::membership.eq("leave"))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         // Losing every qualifying relationship blocks new invites while old ones stay visible.
         diesel::update(room_users::table.filter(room_users::room_id.eq(&mutual)))
             .set(room_users::membership.eq("leave"))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         assert!(matches!(
@@ -3472,18 +3463,18 @@ mod tests {
         let mut replacement = room_users::table
             .filter(room_users::room_id.eq(&target))
             .filter(room_users::user_id.eq(&invitee))
-            .first::<data::room::DbRoomUser>(&mut data::connect().await.unwrap())
+            .first::<data::room::DbRoomUser>(&mut crate::data::db())
             .await
             .unwrap();
         let old_id = replacement.id;
         diesel::delete(room_users::table.find(old_id))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         replacement.id = diesel::dsl::sql::<diesel::sql_types::BigInt>(
             "SELECT nextval(pg_get_serial_sequence('room_users', 'id'))",
         )
-        .get_result(&mut data::connect().await.unwrap())
+        .get_result(&mut crate::data::db())
         .await
         .unwrap();
         replacement.event_id = "$invite_profile_replacement:example.org"
@@ -3492,7 +3483,7 @@ mod tests {
         replacement.event_sn = data::next_sn().await.unwrap();
         diesel::insert_into(room_users::table)
             .values(&replacement)
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         use crate::data::schema::room_invite_admissions;
@@ -3500,7 +3491,7 @@ mod tests {
             room_invite_admissions::table
                 .filter(room_invite_admissions::room_user_id.eq(old_id))
                 .select(room_invite_admissions::room_user_id)
-                .load::<i64>(&mut data::connect().await.unwrap())
+                .load::<i64>(&mut crate::data::db())
                 .await
                 .unwrap()
                 .is_empty()
@@ -3538,7 +3529,7 @@ mod tests {
         let invitee =
             UserId::parse_with_server_name("blocked_stream", crate::config::server_name()).unwrap();
         let remote: OwnedServerName = "invite-stream.example.org".try_into().unwrap();
-        let mut conn = data::connect().await.unwrap();
+        let mut conn = data::connect();
         diesel::insert_into(rooms::table)
             .values(data::room::NewDbRoom {
                 id: room_id.clone(),

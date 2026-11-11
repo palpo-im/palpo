@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use serde::de::DeserializeOwned;
 
+use crate::DataResult;
 use crate::core::events::{AnyRawAccountDataEvent, RoomAccountDataEventType};
 use crate::core::identifiers::*;
 use crate::core::serde::{JsonValue, RawJson, json};
 use crate::core::{Seqnum, UnixMillis};
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_datas)]
@@ -43,7 +44,7 @@ pub async fn set_data(
     event_type: &str,
     json_data: JsonValue,
 ) -> DataResult<DbUserData> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     conn.transaction::<_, crate::DataError, _>(async |conn| {
         lock_data_key(conn, user_id, room_id.as_deref(), event_type).await?;
         let existing = get_latest_data(conn, user_id, room_id.as_deref(), event_type).await?;
@@ -65,7 +66,7 @@ pub async fn set_data_if_unchanged(
     expected: Option<&JsonValue>,
     json_data: JsonValue,
 ) -> DataResult<bool> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     conn.transaction::<_, crate::DataError, _>(async |conn| {
         lock_data_key(conn, user_id, room_id.as_deref(), event_type).await?;
         let existing = get_latest_data(conn, user_id, room_id.as_deref(), event_type).await?;
@@ -199,7 +200,7 @@ pub async fn get_data<E: DeserializeOwned>(
     room_id: Option<&RoomId>,
     kind: &str,
 ) -> DataResult<E> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     let row = if let Some(room_id) = room_id {
         let room_row = user_datas::table
             .filter(user_datas::user_id.eq(user_id))
@@ -249,7 +250,7 @@ pub async fn get_room_data<E: DeserializeOwned>(
         .filter(user_datas::room_id.eq(room_id))
         .filter(user_datas::data_type.eq(kind))
         .order_by(user_datas::id.desc())
-        .first::<DbUserData>(&mut connect().await?)
+        .first::<DbUserData>(&mut crate::db())
         .await
         .optional()?;
     if let Some(row) = row {
@@ -272,7 +273,7 @@ pub async fn get_global_data<E: DeserializeOwned>(
         .filter(user_datas::room_id.is_null())
         .filter(user_datas::data_type.eq(kind))
         .order_by(user_datas::id.desc())
-        .first::<DbUserData>(&mut connect().await?)
+        .first::<DbUserData>(&mut crate::db())
         .await
         .optional()?;
     if let Some(row) = row {
@@ -286,7 +287,7 @@ pub async fn get_global_data<E: DeserializeOwned>(
 }
 
 pub async fn delete_global_data(user_id: &UserId, kind: &str) -> DataResult<()> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     conn.transaction::<_, crate::DataError, _>(async |conn| {
         lock_data_key(conn, user_id, None, kind).await?;
         delete_data_locked(conn, user_id, None, kind).await
@@ -297,7 +298,7 @@ pub async fn delete_global_data(user_id: &UserId, kind: &str) -> DataResult<()> 
 /// Delete a room-scoped account-data entry, keeping a tombstone row so the
 /// deletion propagates through sync (MSC3391), mirroring `delete_global_data`.
 pub async fn delete_room_data(user_id: &UserId, room_id: &RoomId, kind: &str) -> DataResult<()> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     conn.transaction::<_, crate::DataError, _>(async |conn| {
         lock_data_key(conn, user_id, Some(room_id), kind).await?;
         delete_data_locked(conn, user_id, Some(room_id), kind).await
@@ -360,7 +361,7 @@ pub async fn get_global_datas(user_id: &UserId) -> DataResult<Vec<DbUserData>> {
     user_datas::table
         .filter(user_datas::user_id.eq(user_id))
         .filter(user_datas::room_id.is_null())
-        .load::<DbUserData>(&mut connect().await?)
+        .load::<DbUserData>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -375,7 +376,7 @@ pub async fn get_global_account_data(user_id: &UserId) -> DataResult<HashMap<Str
             user_datas::json_data,
             user_datas::is_deleted,
         ))
-        .load::<(String, JsonValue, bool)>(&mut connect().await?)
+        .load::<(String, JsonValue, bool)>(&mut crate::db())
         .await
         .map(|rows| {
             rows.into_iter()
@@ -400,7 +401,7 @@ pub async fn get_room_account_data(
             user_datas::json_data,
             user_datas::is_deleted,
         ))
-        .load::<(Option<OwnedRoomId>, String, JsonValue, bool)>(&mut connect().await?)
+        .load::<(Option<OwnedRoomId>, String, JsonValue, bool)>(&mut crate::db())
         .await?;
 
     let mut result = HashMap::new();
@@ -441,12 +442,12 @@ pub async fn data_changes(
         query
             .filter(user_datas::occur_sn.le(until_sn))
             .order_by(user_datas::occur_sn.asc())
-            .load::<DbUserData>(&mut connect().await?)
+            .load::<DbUserData>(&mut crate::db())
             .await?
     } else {
         query
             .order_by(user_datas::occur_sn.asc())
-            .load::<DbUserData>(&mut connect().await?)
+            .load::<DbUserData>(&mut crate::db())
             .await?
     };
 

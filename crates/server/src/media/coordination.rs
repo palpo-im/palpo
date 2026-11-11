@@ -2,7 +2,7 @@
 use std::future::Future;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::RunQueryDsl;
 
 use crate::core::ServerName;
 use crate::data::connect;
@@ -24,7 +24,7 @@ where
     T: Send,
 {
     let key = format!("{}:{origin}{media_id}", origin.as_str().len());
-    let mut connection = data::coordination_connect().await?;
+    let mut connection = data::coordination_connect();
     connection
         .transaction::<_, AppError, _>(async |connection| {
             diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
@@ -71,7 +71,7 @@ pub(super) async fn delete_locked(
         .filter(media_thumbnails::media_id.eq(media_id))
         .select((media_thumbnails::width, media_thumbnails::height))
         .distinct()
-        .load::<(i32, i32)>(&mut connect().await?)
+        .load::<(i32, i32)>(&mut crate::data::db())
         .await?;
     for (width, height) in dimensions {
         let legacy_id = format!("{media_id}.{width}x{height}");
@@ -89,8 +89,7 @@ pub(super) async fn delete_locked(
     operator.delete(&key).await?;
     // Never discard cleanup identities if ANY object deletion failed above.
     connect()
-        .await?
-        .transaction::<_, diesel::result::Error, _>(async |connection| {
+        .transaction::<_, crate::AppError, _>(async |connection| {
             diesel::delete(
                 media_thumbnails::table
                     .filter(media_thumbnails::origin_server.eq(server_name))

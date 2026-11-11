@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use indexmap::IndexMap;
 use salvo::http::StatusError;
 
@@ -16,7 +16,7 @@ use crate::core::state::Event;
 use crate::data::diesel_exists;
 use crate::data::schema::*;
 use crate::event::handler::{process_pulled_pdu_with_pending_state, process_to_outlier_pdu};
-use crate::event::{connect, parse_fetched_pdu, seen_event_ids};
+use crate::event::{parse_fetched_pdu, seen_event_ids};
 use crate::exts::*;
 use crate::room::state::ensure_field_id;
 use crate::room::timeline;
@@ -54,7 +54,7 @@ async fn recovered_predecessors(
         .filter(events::is_rejected.eq(false))
         .filter(events::soft_failed.eq(false))
         .select(events::id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?
         .into_iter()
         .collect())
@@ -79,7 +79,7 @@ pub async fn fetch_and_process_missing_events(
         .filter(events::room_id.eq(room_id))
         .filter(events::id.eq_any(required))
         .select(events::id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?;
     if required.iter().all(|id| cached.contains(id))
         && crate::event::resolver::resolve_state_at_incoming(
@@ -150,7 +150,7 @@ pub(super) async fn process_missing_events_response(
             .filter(events::room_id.eq(room_id))
             .filter(events::id.eq(&event_id))
             .select((events::is_outlier, events::is_rejected, events::soft_failed))
-            .first::<(bool, bool, bool)>(&mut connect().await?)
+            .first::<(bool, bool, bool)>(&mut crate::data::db())
             .await
             .optional()?;
         // Rejected events are immutable. A cached, unvalidated outlier must
@@ -219,7 +219,7 @@ pub(super) async fn process_missing_events_response(
         .filter(events::is_rejected.eq(false))
         .filter(events::soft_failed.eq(true))
         .select(events::id)
-        .load::<OwnedEventId>(&mut connect().await?)
+        .load::<OwnedEventId>(&mut crate::data::db())
         .await?
         .into_iter()
         .collect();
@@ -262,7 +262,7 @@ pub async fn fetch_and_process_auth_chain(
             events::table
                 .filter(events::id.eq(&event_id))
                 .filter(events::room_id.eq(&room_id)),
-            &mut connect().await?
+            &mut crate::data::db()
         )? {
             let Some(outlier_pdu) = process_to_outlier_pdu(
                 remote_server,

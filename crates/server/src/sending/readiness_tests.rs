@@ -1,5 +1,5 @@
 //! Isolated real-HTTP/PG coverage for the operational readiness boundary.
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::http::StatusCode;
 use salvo::prelude::Service;
 use salvo::test::{ResponseExt, TestClient};
@@ -96,7 +96,7 @@ async fn run() {
     // make HTTP readiness fail promptly even though pool timeout is longer.
     let mut held = Vec::new();
     for _ in 0..data::status().max_size {
-        held.push(data::connect().await.unwrap());
+        held.push(data::checkout().await.unwrap());
     }
     let timed_out = tokio::time::timeout(
         Duration::from_secs(3),
@@ -120,7 +120,7 @@ async fn run() {
     // A sender task is not ready merely because it is alive: startup must
     // recover its durable queue. Break that table while SELECT 1 still works.
     diesel::sql_query("ALTER TABLE outgoing_requests RENAME TO readiness_unavailable_outgoing")
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     let restarts = restart_count();
@@ -144,7 +144,7 @@ async fn run() {
     );
     live(&service).await;
     diesel::sql_query("ALTER TABLE readiness_unavailable_outgoing RENAME TO outgoing_requests")
-        .execute(&mut data::connect().await.unwrap())
+        .execute(&mut crate::data::db())
         .await
         .unwrap();
     wait_ready(&service).await;

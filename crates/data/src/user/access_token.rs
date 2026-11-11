@@ -3,14 +3,14 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use lru_cache::LruCache;
 
+use crate::DataResult;
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
 use crate::schema::*;
 use crate::user::{DbUser, DbUserDevice};
-use crate::{DataResult, connect};
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_access_tokens)]
@@ -165,32 +165,32 @@ pub async fn authenticate_token(token: &str, cache_ttl: Duration) -> DataResult<
 
     let access_token = match user_access_tokens::table
         .filter(user_access_tokens::token.eq(token))
-        .first::<DbAccessToken>(&mut connect().await?)
+        .first::<DbAccessToken>(&mut crate::db())
         .await
     {
         Ok(access_token) => access_token,
-        Err(diesel::result::Error::NotFound) => return Ok(None),
+        Err(horme::Error::Query(diesel::result::Error::NotFound)) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
 
     let user = match users::table
         .find(&access_token.user_id)
-        .first::<DbUser>(&mut connect().await?)
+        .first::<DbUser>(&mut crate::db())
         .await
     {
         Ok(user) => user,
-        Err(diesel::result::Error::NotFound) => return Ok(None),
+        Err(horme::Error::Query(diesel::result::Error::NotFound)) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
 
     let device = match user_devices::table
         .filter(user_devices::device_id.eq(&access_token.device_id))
         .filter(user_devices::user_id.eq(&user.id))
-        .first::<DbUserDevice>(&mut connect().await?)
+        .first::<DbUserDevice>(&mut crate::db())
         .await
     {
         Ok(device) => device,
-        Err(diesel::result::Error::NotFound) => return Ok(None),
+        Err(horme::Error::Query(diesel::result::Error::NotFound)) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
 

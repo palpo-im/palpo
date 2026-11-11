@@ -476,7 +476,7 @@ pub(crate) async fn check_recovered_event(
     rules: &RoomVersionRules,
 ) -> AppResult<()> {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     use crate::data::schema::events;
     use crate::event::POLICY_REFUSED_REASON;
@@ -493,7 +493,7 @@ pub(crate) async fn check_recovered_event(
                 events::soft_failed.eq(true),
                 events::rejection_reason.eq(POLICY_REFUSED_REASON),
             ))
-            .execute(&mut crate::data::connect().await?)
+            .execute(&mut crate::data::db())
             .await?;
         return Err(crate::AppError::internal(POLICY_REFUSED_REASON));
     }
@@ -612,7 +612,7 @@ mod tests {
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_policy_refused_membership_stays_hidden_after_reprocessing() {
         use diesel::prelude::*;
-        use diesel_async::RunQueryDsl;
+        use horme::RunQueryDsl;
 
         use crate::data::schema::events;
         use crate::event::{OutlierPdu, PduEvent};
@@ -648,7 +648,7 @@ mod tests {
         );
         let victim = crate::core::UserId::parse("@victim:example.org").unwrap();
         assert!(!stored.user_can_see(&victim).await.unwrap());
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::connect();
         assert!(
             events::table
                 .find(&stored.event_id)
@@ -711,7 +711,7 @@ mod tests {
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_policy_refusal_survives_a_verdictless_replay() {
         use diesel::prelude::*;
-        use diesel_async::RunQueryDsl;
+        use horme::RunQueryDsl;
 
         use crate::data::schema::events;
         use crate::event::{OutlierPdu, POLICY_REFUSED_REASON, PduEvent};
@@ -735,7 +735,7 @@ mod tests {
             policy_refused: false,
             event_sn: None,
         };
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::connect();
 
         let mut refused = outlier(member("$replayed-refusal", 1));
         refused.policy_refused = true;

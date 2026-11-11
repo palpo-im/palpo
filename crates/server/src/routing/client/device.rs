@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
@@ -13,7 +13,6 @@ use crate::core::client::device::{
 };
 use crate::core::client::uiaa::{AuthError, AuthFlow, AuthType, UiaaInfo};
 use crate::core::error::ErrorKind;
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::data::user::DbUserDevice;
 use crate::data::user::device::update_device_metadata_if_present;
@@ -66,7 +65,7 @@ async fn list_devices(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<DevicesRes
 
     let devices = user_devices::table
         .filter(user_devices::user_id.eq(authed.user_id()))
-        .load::<DbUserDevice>(&mut connect().await?)
+        .load::<DbUserDevice>(&mut crate::data::db())
         .await?;
     json_ok(DevicesResBody {
         devices: devices

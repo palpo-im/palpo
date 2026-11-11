@@ -461,7 +461,7 @@ fn database_sync_join_period_uses_only_available_member_proof() {
 
 async fn partial_join_period() {
     use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use horme::RunQueryDsl;
 
     crate::test_database::init();
     let _ = config::CONFIG.set(
@@ -537,14 +537,14 @@ async fn partial_join_period() {
     let stored = data::schema::event_datas::table
         .filter(data::schema::event_datas::event_id.eq(&*historic.event_id))
         .select(data::schema::event_datas::json_data)
-        .first::<Value>(&mut data::connect().await.unwrap())
+        .first::<Value>(&mut crate::data::db())
         .await
         .unwrap();
     diesel::delete(
         data::schema::event_datas::table
             .filter(data::schema::event_datas::event_id.eq(&*historic.event_id)),
     )
-    .execute(&mut data::connect().await.unwrap())
+    .execute(&mut crate::data::db())
     .await
     .unwrap();
     let mut own_unknown = room::state::CompressedState::new();
@@ -585,10 +585,7 @@ async fn partial_join_period() {
         json_data: malformed,
         format_version: None,
     };
-    restored
-        .save_with_conn(&mut data::connect().await.unwrap())
-        .await
-        .unwrap();
+    restored.save_with_conn(&mut data::connect()).await.unwrap();
     let mut failure = send(
         TestClient::get("http://localhost/_matrix/client/v3/sync?timeout=0").add_header(
             "Authorization",
@@ -618,10 +615,7 @@ async fn partial_join_period() {
     // Completing the same proof must extend the joined period immediately.
     // This fails if the provisional current.event_sn was put in JOIN_SN_CACHE.
     restored.json_data = stored;
-    restored
-        .save_with_conn(&mut data::connect().await.unwrap())
-        .await
-        .unwrap();
+    restored.save_with_conn(&mut data::connect()).await.unwrap();
     assert_eq!(
         room::user::join_sn_for_event(&alice, current.event_id.clone(), current.event_sn)
             .await
@@ -695,7 +689,7 @@ async fn partial_join_period() {
             data::schema::event_points::table
                 .filter(data::schema::event_points::event_sn.eq(unavailable_sn)),
         ))
-        .get_result::<bool>(&mut data::connect().await.unwrap())
+        .get_result::<bool>(&mut crate::data::db())
         .await
         .unwrap()
     );
@@ -769,7 +763,7 @@ async fn partial_join_period() {
     diesel::sql_query(
         "ALTER TABLE event_datas RENAME COLUMN json_data TO unavailable_join_period_json",
     )
-    .execute(&mut data::connect().await.unwrap())
+    .execute(&mut crate::data::db())
     .await
     .unwrap();
     let backend_error =
@@ -777,7 +771,7 @@ async fn partial_join_period() {
     diesel::sql_query(
         "ALTER TABLE event_datas RENAME COLUMN unavailable_join_period_json TO json_data",
     )
-    .execute(&mut data::connect().await.unwrap())
+    .execute(&mut crate::data::db())
     .await
     .unwrap();
     let backend_error = backend_error.unwrap_err();

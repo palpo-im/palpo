@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use serde_json::value::to_raw_value;
 
 use crate::core::client::message::{
@@ -11,8 +11,8 @@ use crate::core::client::message::{
 use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::serde::to_canonical_value;
 use crate::core::{Direction, UnixMillis};
+use crate::data::diesel_exists;
 use crate::data::schema::*;
-use crate::data::{connect, diesel_exists};
 use crate::event::BatchToken;
 use crate::room::timeline::{self, topolo};
 use crate::routing::prelude::*;
@@ -57,7 +57,7 @@ pub(super) async fn get_messages(
             .filter(room_users::room_id.eq(&args.room_id))
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::membership.eq("join")),
-        &mut connect().await?
+        &mut crate::data::db()
     )?;
     if !is_joined {
         let forgotten_row = room_users::table
@@ -65,9 +65,9 @@ pub(super) async fn get_messages(
             .filter(room_users::user_id.eq(sender_id))
             .filter(room_users::membership.eq("leave"))
             .select((room_users::event_sn, room_users::forgotten))
-            .first::<(i64, bool)>(&mut connect().await?)
+            .first::<(i64, bool)>(&mut crate::data::db())
             .await;
-        let Some((_event_sn, forgotten)) = diesel::OptionalExtension::optional(forgotten_row)?
+        let Some((_event_sn, forgotten)) = horme::OptionalExtension::optional(forgotten_row)?
         else {
             return Err(MatrixError::forbidden("you aren't a member of the room", None).into());
         };

@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use diesel_async::{AsyncConnection, AsyncPgConnection};
+use diesel_async::AsyncPgConnection;
 use salvo::http::StatusCode;
 use serde_json::value::to_raw_value;
 use tokio::sync::{Notify, Semaphore};
@@ -145,7 +145,7 @@ async fn process_one_due_event() -> AppResult<bool> {
         .acquire()
         .await
         .expect("the delayed-event operation semaphore is never closed");
-    let mut conn = crate::data::coordination_connect().await?;
+    let mut conn = crate::data::coordination_connect();
     let (processed, delivery) = conn
         .transaction::<_, AppError, _>(async |conn| {
             let now = UnixMillis::now().get() as i64;
@@ -234,7 +234,7 @@ async fn retry_pending_deliveries() -> AppResult<()> {
 }
 
 async fn queue_committed_delivery(room_id: &RoomId, event_id: &EventId) -> AppResult<()> {
-    let mut conn = crate::data::coordination_connect().await?;
+    let mut conn = crate::data::coordination_connect();
     conn.transaction::<_, AppError, _>(async |conn| {
         if !delayed_event::lock_delivery(conn, event_id).await? {
             return Ok(());
@@ -513,7 +513,7 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 .acquire()
                 .await
                 .expect("the delayed-event operation semaphore is never closed");
-            let mut conn = crate::data::coordination_connect().await?;
+            let mut conn = crate::data::coordination_connect();
             if delayed_event::restart(&mut conn, user_id, delay_id)
                 .await?
                 .is_some()
@@ -535,7 +535,7 @@ pub async fn update(user_id: &UserId, delay_id: &str, action: &UpdateAction) -> 
                 .acquire()
                 .await
                 .expect("the delayed-event operation semaphore is never closed");
-            let mut conn = crate::data::coordination_connect().await?;
+            let mut conn = crate::data::coordination_connect();
             if delayed_event::cancel(&mut conn, user_id, delay_id).await? {
                 Ok(())
             } else {
@@ -564,7 +564,7 @@ async fn send_now(user_id: &UserId, delay_id: &str) -> AppResult<()> {
         .acquire()
         .await
         .expect("the delayed-event operation semaphore is never closed");
-    let mut conn = crate::data::coordination_connect().await?;
+    let mut conn = crate::data::coordination_connect();
     let delivery = conn
         .transaction::<_, AppError, _>(async |conn| {
             let Some(event) = delayed_event::lock_for_send(conn, user_id, delay_id).await? else {
@@ -844,7 +844,7 @@ mod tests {
             "sticky lifetime starts at delivery, not scheduling"
         );
         assert!(builder.transaction_device.is_none());
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::connect();
         let restarted = delayed_event::restart(&mut conn, &row.user_id, &row.delay_id)
             .await
             .unwrap()
@@ -907,8 +907,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_delayed_sticky_massaging_preserves_protocol_expiry() {
-        use diesel::{OptionalExtension, QueryDsl};
-        use diesel_async::RunQueryDsl;
+        use diesel::QueryDsl;
+        use horme::{OptionalExtension as _, RunQueryDsl};
 
         use super::*;
         use crate::data::schema::{event_stickies, events};
@@ -968,7 +968,7 @@ mod tests {
                 event_sn: None,
             };
             outlier.save_to_database(false).await.unwrap();
-            let mut conn = crate::data::connect().await.unwrap();
+            let mut conn = crate::data::connect();
             let expires_at = event_stickies::table
                 .find(&event_id)
                 .select(event_stickies::expires_at)

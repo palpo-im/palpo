@@ -1,13 +1,14 @@
 use diesel::prelude::*;
-use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use serde::Deserialize;
 
+use crate::DataResult;
 use crate::core::events::StateEventType;
 use crate::core::identifiers::*;
 use crate::core::serde::{CanonicalJsonObject, JsonValue, default_false};
 use crate::core::{MatrixError, Seqnum, UnixMillis};
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 pub mod delayed_event;
 pub mod event;
@@ -216,13 +217,16 @@ pub struct DbEventData {
 
 impl DbEventData {
     pub async fn save(&self) -> DataResult<()> {
-        let mut conn = connect().await?;
+        let mut conn = crate::connect();
         self.save_with_conn(&mut conn).await
     }
 
     /// Save event JSON using the caller's connection, allowing publication and
     /// any feature-specific visibility index to share one transaction.
-    pub async fn save_with_conn(&self, conn: &mut AsyncPgConnection) -> DataResult<()> {
+    pub async fn save_with_conn(
+        &self,
+        conn: &mut impl horme::GetConnection<Connection = AsyncPgConnection>,
+    ) -> DataResult<()> {
         diesel::insert_into(event_datas::table)
             .values(self)
             .on_conflict(event_datas::event_id)
@@ -261,7 +265,7 @@ impl DbEvent {
     pub async fn get_by_id(id: &EventId) -> DataResult<Self> {
         events::table
             .find(id)
-            .first(&mut connect().await?)
+            .first(&mut crate::db())
             .await
             .map_err(Into::into)
     }
@@ -357,7 +361,7 @@ impl NewDbEvent {
     }
 
     pub async fn save(&self) -> DataResult<()> {
-        let mut conn = connect().await?;
+        let mut conn = crate::connect();
         self.save_with_conn(&mut conn).await?;
         Ok(())
     }
@@ -368,7 +372,10 @@ impl NewDbEvent {
     /// Returns the stored `received_at`. Re-saving an existing event (an outlier received
     /// again, for example) keeps the first non-null receipt time, so a retransmission
     /// cannot move the event's receipt forward.
-    pub async fn save_with_conn(&self, conn: &mut AsyncPgConnection) -> DataResult<Option<i64>> {
+    pub async fn save_with_conn(
+        &self,
+        conn: &mut impl horme::GetConnection<Connection = AsyncPgConnection>,
+    ) -> DataResult<Option<i64>> {
         use diesel::sql_types::{BigInt, Nullable};
 
         let first_receipt = diesel::dsl::sql::<Nullable<BigInt>>(
@@ -419,7 +426,7 @@ pub async fn is_disabled(room_id: &RoomId) -> DataResult<bool> {
     let query = rooms::table
         .filter(rooms::id.eq(room_id))
         .filter(rooms::disabled.eq(true));
-    Ok(diesel_exists!(query, &mut connect().await?)?)
+    Ok(diesel_exists!(query, &mut crate::db())?)
 }
 
 /// Records that `server_name` has joined members in the room.
@@ -434,7 +441,7 @@ pub async fn add_joined_server(room_id: &RoomId, server_name: &ServerName) -> Da
             room_joined_servers::occur_sn.eq(next_sn),
         ))
         .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(inserted > 0)
 }
@@ -447,7 +454,7 @@ pub async fn joined_servers_for_rooms(
         .filter(room_joined_servers::room_id.eq_any(room_ids))
         .select(room_joined_servers::server_id)
         .distinct()
-        .load::<OwnedServerName>(&mut connect().await?)
+        .load::<OwnedServerName>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -462,14 +469,14 @@ pub struct NewDbBannedRoom {
 
 pub async fn is_banned(room_id: &RoomId) -> DataResult<bool> {
     let query = banned_rooms::table.filter(banned_rooms::room_id.eq(room_id));
-    Ok(diesel_exists!(query, &mut connect().await?)?)
+    Ok(diesel_exists!(query, &mut crate::db())?)
 }
 
 pub async fn is_public(room_id: &RoomId) -> DataResult<bool> {
     rooms::table
         .filter(rooms::id.eq(room_id))
         .select(rooms::is_public)
-        .first(&mut connect().await?)
+        .first(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -478,7 +485,7 @@ pub async fn is_public(room_id: &RoomId) -> DataResult<bool> {
 pub async fn set_public(room_id: &RoomId, value: bool) -> DataResult<()> {
     diesel::update(rooms::table.find(room_id))
         .set(rooms::is_public.eq(value))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -488,7 +495,7 @@ pub async fn get_alias_room_id(alias_id: &RoomAliasId) -> DataResult<Option<Owne
     room_aliases::table
         .filter(room_aliases::alias_id.eq(alias_id))
         .select(room_aliases::room_id)
-        .first::<OwnedRoomId>(&mut connect().await?)
+        .first::<OwnedRoomId>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -498,7 +505,7 @@ pub async fn get_alias_room_id(alias_id: &RoomAliasId) -> DataResult<Option<Owne
 pub async fn get_alias(alias_id: &RoomAliasId) -> DataResult<Option<DbRoomAlias>> {
     room_aliases::table
         .find(alias_id)
-        .first::<DbRoomAlias>(&mut connect().await?)
+        .first::<DbRoomAlias>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -509,7 +516,7 @@ pub async fn local_aliases_for_room(room_id: &RoomId) -> DataResult<Vec<OwnedRoo
     room_aliases::table
         .filter(room_aliases::room_id.eq(room_id))
         .select(room_aliases::alias_id)
-        .load::<OwnedRoomAliasId>(&mut connect().await?)
+        .load::<OwnedRoomAliasId>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -518,7 +525,7 @@ pub async fn local_aliases_for_room(room_id: &RoomId) -> DataResult<Vec<OwnedRoo
 pub async fn all_local_aliases() -> DataResult<Vec<(OwnedRoomId, OwnedRoomAliasId)>> {
     room_aliases::table
         .select((room_aliases::room_id, room_aliases::alias_id))
-        .load::<(OwnedRoomId, OwnedRoomAliasId)>(&mut connect().await?)
+        .load::<(OwnedRoomId, OwnedRoomAliasId)>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -531,7 +538,7 @@ pub async fn alias_exists_for_other_room(
     let query = room_aliases::table
         .filter(room_aliases::alias_id.eq(alias_id))
         .filter(room_aliases::room_id.ne(room_id));
-    Ok(diesel_exists!(query, &mut connect().await?)?)
+    Ok(diesel_exists!(query, &mut crate::db())?)
 }
 
 /// Insert an alias, ignoring conflicts with an existing one.
@@ -539,7 +546,7 @@ pub async fn set_alias(alias: DbRoomAlias) -> DataResult<()> {
     diesel::insert_into(room_aliases::table)
         .values(alias)
         .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -547,7 +554,7 @@ pub async fn set_alias(alias: DbRoomAlias) -> DataResult<()> {
 /// Remove a local alias.
 pub async fn remove_alias(alias_id: &RoomAliasId) -> DataResult<()> {
     diesel::delete(room_aliases::table.filter(room_aliases::alias_id.eq(alias_id)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -586,7 +593,7 @@ pub async fn list_threads(
         .select((threads::event_id, threads::last_sn))
         .order_by((threads::last_sn.desc(), threads::event_id.desc()))
         .limit(limit)
-        .load::<(OwnedEventId, i64)>(&mut connect().await?)
+        .load::<(OwnedEventId, i64)>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -609,7 +616,7 @@ pub async fn thread_participants(
         .filter(events::is_redacted.eq(false))
         .select(events::sender_id)
         .distinct()
-        .load::<Option<OwnedUserId>>(&mut connect().await?)
+        .load::<Option<OwnedUserId>>(&mut crate::db())
         .await?
         .into_iter()
         .flatten()
@@ -620,7 +627,7 @@ pub async fn thread_participants(
 pub async fn set_event_thread_id(event_id: &EventId, thread_id: &EventId) -> DataResult<()> {
     diesel::update(event_points::table.find(event_id))
         .set(event_points::thread_id.eq(thread_id))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -634,7 +641,7 @@ pub async fn upsert_thread(thread: DbThread) -> DataResult<()> {
         .on_conflict(threads::event_id)
         .do_update()
         .set((threads::last_id.eq(last_id), threads::last_sn.eq(last_sn)))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -643,7 +650,7 @@ pub async fn upsert_thread(thread: DbThread) -> DataResult<()> {
 pub async fn get_room_current(room_id: &RoomId) -> DataResult<Option<DbRoomCurrent>> {
     stats_room_currents::table
         .filter(stats_room_currents::room_id.eq(room_id))
-        .first::<DbRoomCurrent>(&mut connect().await?)
+        .first::<DbRoomCurrent>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -654,7 +661,7 @@ pub async fn invited_members_count(room_id: &RoomId) -> DataResult<Option<i64>> 
     stats_room_currents::table
         .filter(stats_room_currents::room_id.eq(room_id))
         .select(stats_room_currents::invited_members)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -665,7 +672,7 @@ pub async fn left_members_count(room_id: &RoomId) -> DataResult<Option<i64>> {
     stats_room_currents::table
         .filter(stats_room_currents::room_id.eq(room_id))
         .select(stats_room_currents::left_members)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -675,7 +682,7 @@ pub async fn left_members_count(room_id: &RoomId) -> DataResult<Option<i64>> {
 pub async fn add_event_relation(relation: &NewDbEventRelation) -> DataResult<()> {
     diesel::insert_into(event_relations::table)
         .values(relation)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -719,7 +726,7 @@ pub async fn get_event_relations(
     }
     query
         .limit(limit as i64)
-        .load::<DbEventRelation>(&mut connect().await?)
+        .load::<DbEventRelation>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -867,7 +874,7 @@ pub async fn get_event_relations_publication(
     }
     query
         .limit(limit as i64)
-        .load::<DbEventRelation>(&mut connect().await?)
+        .load::<DbEventRelation>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -876,7 +883,7 @@ pub async fn get_event_relations_publication(
 pub async fn set_event_soft_failed(event_id: &EventId) -> DataResult<()> {
     diesel::update(events::table.filter(events::id.eq(event_id)))
         .set(events::soft_failed.eq(true))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -886,7 +893,7 @@ pub async fn is_event_soft_failed(event_id: &EventId) -> DataResult<bool> {
     events::table
         .filter(events::id.eq(event_id))
         .select(events::soft_failed)
-        .first(&mut connect().await?)
+        .first(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -899,7 +906,7 @@ pub async fn is_event_soft_failed(event_id: &EventId) -> DataResult<bool> {
 pub async fn get_state_field(field_id: i64) -> DataResult<DbRoomStateField> {
     room_state_fields::table
         .find(field_id)
-        .first::<DbRoomStateField>(&mut connect().await?)
+        .first::<DbRoomStateField>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -910,7 +917,7 @@ pub async fn get_state_field_id(event_ty: &StateEventType, state_key: &str) -> D
         .filter(room_state_fields::event_ty.eq(event_ty))
         .filter(room_state_fields::state_key.eq(state_key))
         .select(room_state_fields::id)
-        .first::<i64>(&mut connect().await?)
+        .first::<i64>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -924,7 +931,7 @@ pub async fn ensure_state_field_id(event_ty: &StateEventType, state_key: &str) -
         ))
         .on_conflict_do_nothing()
         .returning(room_state_fields::id)
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::db())
         .await
         .optional()?;
     if let Some(id) = id {
@@ -934,7 +941,7 @@ pub async fn ensure_state_field_id(event_ty: &StateEventType, state_key: &str) -
             .filter(room_state_fields::event_ty.eq(event_ty))
             .filter(room_state_fields::state_key.eq(state_key))
             .select(room_state_fields::id)
-            .first::<i64>(&mut connect().await?)
+            .first::<i64>(&mut crate::db())
             .await
             .map_err(Into::into)
     }
@@ -952,20 +959,20 @@ pub async fn ensure_state_field(
         ))
         .on_conflict_do_nothing()
         .returning(room_state_fields::id)
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::db())
         .await
         .optional()?;
     if let Some(id) = id {
         room_state_fields::table
             .find(id)
-            .first::<DbRoomStateField>(&mut connect().await?)
+            .first::<DbRoomStateField>(&mut crate::db())
             .await
             .map_err(Into::into)
     } else {
         room_state_fields::table
             .filter(room_state_fields::event_ty.eq(event_ty))
             .filter(room_state_fields::state_key.eq(state_key))
-            .first::<DbRoomStateField>(&mut connect().await?)
+            .first::<DbRoomStateField>(&mut crate::db())
             .await
             .map_err(Into::into)
     }
@@ -980,7 +987,7 @@ pub async fn get_room_frame_id(room_id: &RoomId, until_sn: Option<i64>) -> DataR
             .filter(event_points::frame_id.is_not_null())
             .select(event_points::frame_id)
             .order(event_points::event_sn.desc())
-            .first::<Option<i64>>(&mut connect().await?)
+            .first::<Option<i64>>(&mut crate::db())
             .await
             .optional()
             .map(Option::flatten)
@@ -989,7 +996,7 @@ pub async fn get_room_frame_id(room_id: &RoomId, until_sn: Option<i64>) -> DataR
         rooms::table
             .find(room_id)
             .select(rooms::state_frame_id)
-            .first::<Option<i64>>(&mut connect().await?)
+            .first::<Option<i64>>(&mut crate::db())
             .await
             .optional()
             .map(Option::flatten)
@@ -1002,7 +1009,7 @@ pub async fn get_pdu_frame_id(event_id: &EventId) -> DataResult<Option<i64>> {
     event_points::table
         .filter(event_points::event_id.eq(event_id))
         .select(event_points::frame_id)
-        .first::<Option<i64>>(&mut connect().await?)
+        .first::<Option<i64>>(&mut crate::db())
         .await
         .optional()
         .map(Option::flatten)
@@ -1014,7 +1021,7 @@ pub async fn get_pdu_before_frame_id(event_id: &EventId) -> DataResult<Option<i6
     event_points::table
         .filter(event_points::event_id.eq(event_id))
         .select(event_points::before_frame_id)
-        .first::<Option<i64>>(&mut connect().await?)
+        .first::<Option<i64>>(&mut crate::db())
         .await
         .optional()
         .map(Option::flatten)
@@ -1030,7 +1037,7 @@ pub async fn ensure_state_frame(room_id: &RoomId, hash_data: Vec<u8>) -> DataRes
         ))
         .on_conflict_do_nothing()
         .returning(room_state_frames::id)
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -1041,7 +1048,7 @@ pub async fn get_state_frame_id(room_id: &RoomId, hash_data: &[u8]) -> DataResul
         .filter(room_state_frames::room_id.eq(room_id))
         .filter(room_state_frames::hash_data.eq(hash_data))
         .select(room_state_frames::id)
-        .get_result(&mut connect().await?)
+        .get_result(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -1050,7 +1057,7 @@ pub async fn get_state_frame_id(room_id: &RoomId, hash_data: &[u8]) -> DataResul
 pub async fn get_state_delta(frame_id: i64) -> DataResult<DbRoomStateDelta> {
     room_state_deltas::table
         .find(frame_id)
-        .first::<DbRoomStateDelta>(&mut connect().await?)
+        .first::<DbRoomStateDelta>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -1060,7 +1067,7 @@ pub async fn save_state_delta(delta: DbRoomStateDelta) -> DataResult<()> {
     diesel::insert_into(room_state_deltas::table)
         .values(delta)
         .on_conflict_do_nothing()
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -1097,7 +1104,7 @@ impl NewDbEventEdge {
         diesel::insert_into(event_edges::table)
             .values(self)
             .on_conflict_do_nothing()
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
         Ok(())
     }
@@ -1115,7 +1122,7 @@ pub async fn get_timeline_gaps(
         .filter(timeline_gaps::event_sn.le(max_sn))
         .order(timeline_gaps::event_sn.asc())
         .select(timeline_gaps::event_sn)
-        .load::<Seqnum>(&mut connect().await?)
+        .load::<Seqnum>(&mut crate::db())
         .await?;
     Ok(gaps)
 }
@@ -1228,7 +1235,7 @@ pub async fn joined_users_since(
         .filter(room_users::event_sn.ge(since_sn))
         .filter(room_users::event_sn.lt(until_sn))
         .select(room_users::user_id)
-        .load(&mut connect().await?)
+        .load(&mut crate::db())
         .await
         .map_err(Into::into)
 }

@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::RunQueryDsl;
 use salvo::http::StatusError;
 
 use crate::core::UnixMillis;
@@ -272,7 +272,6 @@ pub async fn knock_room(
     // This server is not joined to the remote room. Its local room state only
     // contains the knock event, so use the state returned by /send_knock for /sync.
     connect()
-        .await?
         .transaction::<_, AppError, _>(async |conn| {
             crate::data::user::lock_invite_user_write(conn, sender_id).await?;
             diesel::update(

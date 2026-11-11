@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::oapi::extract::PathParam;
 use salvo::prelude::*;
 
@@ -9,7 +9,6 @@ use crate::core::UnixMillis;
 use crate::core::authentication::TokenType;
 use crate::core::client::user::RequstOpenidTokenResBody;
 use crate::core::identifiers::*;
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, config, json_ok, utils};
 
@@ -48,7 +47,7 @@ pub(super) async fn request_token(
             user_openid_tokens::token.eq(&access_token),
             user_openid_tokens::expires_at.eq(expires_at),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
 
     json_ok(RequstOpenidTokenResBody::new(

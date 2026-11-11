@@ -1,6 +1,6 @@
 //! HTTP regression for the state API's membership snapshot boundary.
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::prelude::*;
 use salvo::test::{RequestBuilder, ResponseExt, TestClient};
 use serde_json::{Value, json};
@@ -294,7 +294,7 @@ async fn state_snapshots() {
         let frame = crate::room::get_frame_id(&room, None).await.unwrap();
         diesel::update(rooms::table.find(&room))
             .set(rooms::state_frame_id.eq(None::<i64>))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let mut response = send(
@@ -310,7 +310,7 @@ async fn state_snapshots() {
         assert_eq!(body["errcode"], "M_NOT_FOUND");
         diesel::update(rooms::table.find(&room))
             .set(rooms::state_frame_id.eq(Some(frame)))
-            .execute(&mut data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
     }

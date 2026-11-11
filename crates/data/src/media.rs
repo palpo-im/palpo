@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use horme::{OptionalExtension as _, RunQueryDsl};
 
 use crate::core::UnixMillis;
 use crate::core::identifiers::*;
@@ -57,15 +57,31 @@ pub async fn reserve_upload(
         .bind::<diesel::sql_types::Text, _>(media_id)
         .bind::<diesel::sql_types::Text, _>(owner.as_str())
         .bind::<diesel::sql_types::BigInt, _>(expires_at.0 as i64)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
 
-/// Lock the reservation through metadata publication, serializing all writers
-/// sharing a database. Call inside a transaction when `lock` is true.
+/// Read a reservation without retaining a connection between business calls.
 pub async fn upload_reservation(
+    db: &mut impl horme::GetConnection<Connection = diesel_async::AsyncPgConnection>,
+    server: &ServerName,
+    media_id: &str,
+) -> DataResult<Option<UploadReservation>> {
+    read_upload_reservation(db, server, media_id, false).await
+}
+
+/// Hold the reservation row lock until the caller's transaction finishes.
+pub async fn lock_upload_reservation(
     conn: &mut diesel_async::AsyncPgConnection,
+    server: &ServerName,
+    media_id: &str,
+) -> DataResult<Option<UploadReservation>> {
+    read_upload_reservation(conn, server, media_id, true).await
+}
+
+async fn read_upload_reservation(
+    db: &mut impl horme::GetConnection<Connection = diesel_async::AsyncPgConnection>,
     server: &ServerName,
     media_id: &str,
     lock: bool,
@@ -78,7 +94,7 @@ pub async fn upload_reservation(
     diesel::sql_query(sql)
         .bind::<diesel::sql_types::Text, _>(server.as_str())
         .bind::<diesel::sql_types::Text, _>(media_id)
-        .get_result(conn)
+        .get_result(db)
         .await
         .optional()
         .map_err(Into::into)
@@ -107,7 +123,7 @@ pub async fn list_media_created_by(user_id: &UserId) -> DataResult<Vec<(OwnedSer
     media_metadatas::table
         .filter(media_metadatas::created_by.eq(user_id))
         .select((media_metadatas::origin_server, media_metadatas::media_id))
-        .load::<(OwnedServerName, String)>(&mut connect().await?)
+        .load::<(OwnedServerName, String)>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -119,7 +135,7 @@ pub async fn get_metadata(
     media_metadatas::table
         .filter(media_metadatas::media_id.eq(media_id))
         .filter(media_metadatas::origin_server.eq(server_name))
-        .first::<DbMetadata>(&mut connect().await?)
+        .first::<DbMetadata>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -129,8 +145,7 @@ pub async fn get_metadata(
 /// Keep both tables atomic so a retry retains the thumbnail cleanup identities.
 pub async fn delete_media(server_name: &ServerName, media_id: &str) -> DataResult<()> {
     connect()
-        .await?
-        .transaction::<_, diesel::result::Error, _>(async |conn| {
+        .transaction::<_, crate::DataError, _>(async |conn| {
             diesel::delete(
                 media_thumbnails::table
                     .filter(media_thumbnails::media_id.eq(media_id))
@@ -190,7 +205,7 @@ pub async fn get_thumbnail_by_dimension(
         .filter(media_thumbnails::media_id.eq(media_id))
         .filter(media_thumbnails::width.eq(width as i32))
         .filter(media_thumbnails::height.eq(height as i32))
-        .first::<DbThumbnail>(&mut connect().await?)
+        .first::<DbThumbnail>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)
@@ -230,7 +245,7 @@ pub struct NewDbUrlPreview {
 pub async fn get_url_preview(url: &str) -> DataResult<DbUrlPreview> {
     media_url_previews::table
         .filter(media_url_previews::url.eq(url))
-        .first::<DbUrlPreview>(&mut connect().await?)
+        .first::<DbUrlPreview>(&mut crate::db())
         .await
         .map_err(Into::into)
 }
@@ -241,7 +256,7 @@ pub async fn set_url_preview(preview: &NewDbUrlPreview) -> DataResult<()> {
         .on_conflict(media_url_previews::url)
         .do_update()
         .set(preview)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -249,7 +264,7 @@ pub async fn set_url_preview(preview: &NewDbUrlPreview) -> DataResult<()> {
 pub async fn insert_metadata(metadata: &NewDbMetadata) -> DataResult<()> {
     diesel::insert_into(media_metadatas::table)
         .values(metadata)
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -266,7 +281,7 @@ pub async fn list_media_by_user(
     let total = media_metadatas::table
         .filter(media_metadatas::created_by.eq(user_id.as_str()))
         .count()
-        .get_result::<i64>(&mut connect().await?)
+        .get_result::<i64>(&mut crate::db())
         .await?;
 
     // Build query with ordering
@@ -317,7 +332,7 @@ pub async fn list_media_by_user(
     let media = query
         .offset(from)
         .limit(limit)
-        .load::<DbMetadata>(&mut connect().await?)
+        .load::<DbMetadata>(&mut crate::db())
         .await?;
 
     Ok((media, total))
@@ -337,7 +352,7 @@ pub async fn delete_media_by_ids(
                 .filter(media_metadatas::media_id.eq(media_id))
                 .filter(media_metadatas::origin_server.eq(server_name)),
         )
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
 
         if rows > 0 {
@@ -347,7 +362,7 @@ pub async fn delete_media_by_ids(
                     .filter(media_thumbnails::media_id.eq(media_id))
                     .filter(media_thumbnails::origin_server.eq(server_name)),
             )
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
             deleted.push(media_id.clone());
         }
@@ -371,7 +386,7 @@ pub async fn purge_remote_media_cache(
             .filter(media_thumbnails::origin_server.ne(local_server))
             .filter(media_thumbnails::created_at.lt(before_ts)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await? as i64;
 
     // Delete metadata
@@ -380,7 +395,7 @@ pub async fn purge_remote_media_cache(
             .filter(media_metadatas::origin_server.ne(local_server))
             .filter(media_metadatas::created_at.lt(before_ts)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await? as i64;
 
     Ok(deleted_metadata + deleted_thumbnails)
@@ -400,7 +415,7 @@ pub async fn delete_old_local_media(
         .filter(media_metadatas::created_at.lt(before_ts))
         .filter(media_metadatas::file_size.gt(size_gt))
         .select(media_metadatas::media_id)
-        .load::<String>(&mut connect().await?)
+        .load::<String>(&mut crate::db())
         .await?;
 
     if media_ids.is_empty() {
@@ -413,7 +428,7 @@ pub async fn delete_old_local_media(
             .filter(media_thumbnails::origin_server.eq(local_server))
             .filter(media_thumbnails::media_id.eq_any(&media_ids)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
 
     // Delete metadata
@@ -422,7 +437,7 @@ pub async fn delete_old_local_media(
             .filter(media_metadatas::origin_server.eq(local_server))
             .filter(media_metadatas::media_id.eq_any(&media_ids)),
     )
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
 
     let total = media_ids.len() as i64;
@@ -446,7 +461,7 @@ pub async fn get_user_media_statistics(
     order_by: Option<&str>,
     dir: Option<&str>,
 ) -> DataResult<(Vec<UserMediaStatsRow>, i64)> {
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     let order_col = match order_by {
         Some("media_count") => "media_count",
         _ => "media_length",

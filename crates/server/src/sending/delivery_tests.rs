@@ -35,7 +35,7 @@ async fn retry_push() {
     let guard = guard::init();
     for name in ["alice", "bob"] {
         let user = UserId::parse(format!("@{name}:push-retry.example")).unwrap();
-        let mut conn = connect().await.unwrap();
+        let mut conn = crate::data::connect();
         diesel::insert_into(users::table)
             .values(NewDbUser {
                 id: user.clone(),

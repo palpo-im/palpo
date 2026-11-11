@@ -258,13 +258,13 @@ fn resolve_limit(limit: Option<usize>) -> usize {
 #[cfg(test)]
 mod transaction_tests {
     use diesel::prelude::*;
-    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use diesel_async::SimpleAsyncConnection;
     use futures_util::stream::{FuturesUnordered, StreamExt};
+    use horme::RunQueryDsl;
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::data::connect;
     use crate::data::schema::*;
 
     async fn send(
@@ -350,7 +350,7 @@ mod transaction_tests {
         );
         // A failure after receipt reservation must roll the receipt and deliveries
         // back, so the same transaction remains retryable.
-        connect().await.unwrap().batch_execute("CREATE FUNCTION q14_fail_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.json_data->>'type' = 'm.fail' THEN RAISE EXCEPTION 'injected inbox failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q14_fail_delivery BEFORE INSERT ON device_inboxes FOR EACH ROW EXECUTE FUNCTION q14_fail_delivery();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("CREATE FUNCTION q14_fail_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.json_data->>'type' = 'm.fail' THEN RAISE EXCEPTION 'injected inbox failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER q14_fail_delivery BEFORE INSERT ON device_inboxes FOR EACH ROW EXECUTE FUNCTION q14_fail_delivery();").await.unwrap();
         assert_eq!(
             send(&service, "m.fail", "retry", &body).await.0,
             Some(StatusCode::INTERNAL_SERVER_ERROR)
@@ -359,11 +359,11 @@ mod transaction_tests {
             .filter(event_idempotents::user_id.eq(&user))
             .filter(event_idempotents::endpoint.eq("sendToDevice/m.fail"))
             .count()
-            .get_result(&mut connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(receipts, 0);
-        connect().await.unwrap().batch_execute("DROP TRIGGER q14_fail_delivery ON device_inboxes; DROP FUNCTION q14_fail_delivery();").await.unwrap();
+        crate::data::checkout().await.unwrap().batch_execute("DROP TRIGGER q14_fail_delivery ON device_inboxes; DROP FUNCTION q14_fail_delivery();").await.unwrap();
         let (status, body_response) = send(&service, "m.fail", "retry", &body).await;
         assert_eq!(status, Some(StatusCode::OK), "{body_response}");
         assert_eq!(

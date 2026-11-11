@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde::Deserialize;
@@ -317,14 +317,11 @@ async fn process_edu_receipt(origin: &ServerName, receipt: ReceiptContent) {
                     let event_room = crate::data::schema::event_points::table
                         .find(event_id)
                         .select(crate::data::schema::event_points::room_id)
-                        .first::<OwnedRoomId>(&mut match crate::data::connect().await {
-                            Ok(conn) => conn,
-                            Err(error) => {
-                                warn!(%error, "failed to check receipt event room");
-                                continue;
-                            }
-                        })
+                        .first::<OwnedRoomId>(&mut crate::data::connect())
                         .await;
+                    if let Err(horme::Error::Acquire(error)) = &event_room {
+                        warn!(%error, "failed to check receipt event room");
+                    }
                     if !event_room.as_ref().is_ok_and(|actual| actual == &room_id) {
                         continue;
                     }
@@ -587,7 +584,8 @@ mod tests {
 #[cfg(test)]
 mod device_version_tests {
     use diesel::{ExpressionMethods, QueryDsl};
-    use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
+    use diesel_async::SimpleAsyncConnection;
+    use horme::RunQueryDsl;
     use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
 
@@ -667,7 +665,7 @@ mod device_version_tests {
                 state_data: None,
                 created_at: UnixMillis::now(),
             })
-            .execute(&mut crate::data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
     }
@@ -696,7 +694,7 @@ mod device_version_tests {
                 NewDbEvent::from_canonical_json_with_room_id(&pdu.event_id, sn, &json, false, room)
                     .unwrap();
             event.is_outlier = false;
-            let mut conn = crate::data::connect().await.unwrap();
+            let mut conn = crate::data::connect();
             event.save_with_conn(&mut conn).await.unwrap();
             DbEventData {
                 event_id: pdu.event_id.clone(),
@@ -741,7 +739,7 @@ mod device_version_tests {
         crate::room::state::set_room_state(room, frame)
             .await
             .unwrap();
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::connect();
         for (id, sn) in saved {
             diesel::update(event_points::table.find(id))
                 .set((
@@ -805,7 +803,7 @@ mod device_version_tests {
             .await
             .unwrap();
         let room: OwnedRoomId = format!("!device-versions:{LOCAL}").try_into().unwrap();
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::connect();
         diesel::insert_into(rooms::table)
             .values(crate::data::room::NewDbRoom {
                 id: room.clone(),
@@ -916,7 +914,7 @@ mod device_version_tests {
         );
         assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
 
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::checkout().await.unwrap();
         conn.batch_execute("CREATE FUNCTION fail_device_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.user_id = '@bob:remote-devices.example' THEN RAISE EXCEPTION 'injected device marker failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_device_version BEFORE INSERT ON e2e_key_changes FOR EACH ROW EXECUTE FUNCTION fail_device_version();").await.unwrap();
         drop(conn);
         let response = send_update(&service, &key, "failure", 55, "BOB").await;
@@ -926,7 +924,7 @@ mod device_version_tests {
             "{:?}",
             response.1
         );
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::checkout().await.unwrap();
         conn.batch_execute("DROP TRIGGER fail_device_version ON e2e_key_changes; DROP FUNCTION fail_device_version();").await.unwrap();
         drop(conn);
         let before = crate::data::curr_sn().await.unwrap();
@@ -968,7 +966,7 @@ mod device_version_tests {
         let count: i64 = remote_device_list_versions::table
             .filter(remote_device_list_versions::user_id.eq(&bob))
             .count()
-            .get_result(&mut crate::data::connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(
@@ -997,12 +995,12 @@ mod device_version_tests {
                 .filter(remote_device_list_versions::user_id.eq(&bob))
                 .filter(remote_device_list_versions::stream_id.eq("1000")),
         ))
-        .get_result(&mut crate::data::connect().await.unwrap())
+        .get_result(&mut crate::data::db())
         .await
         .unwrap();
         assert!(retained);
         diesel::delete(room_users::table.filter(room_users::user_id.eq(&alice)))
-            .execute(&mut crate::data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let before = crate::data::curr_sn().await.unwrap();
@@ -1016,7 +1014,7 @@ mod device_version_tests {
         let count: i64 = remote_device_list_versions::table
             .filter(remote_device_list_versions::user_id.eq(&bob))
             .count()
-            .get_result(&mut crate::data::connect().await.unwrap())
+            .get_result(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(count, 0, "unshared user's retained window was not cleared");
@@ -1032,7 +1030,7 @@ mod device_version_tests {
         // Each atomic membership transition has exactly one joined side. A
         // single statement must never invent shared membership by combining
         // remote and local rows from different READ COMMITTED snapshots.
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::connect();
         diesel::sql_query("UPDATE room_users SET membership = CASE WHEN user_id = $1 THEN 'leave' ELSE 'join' END WHERE user_id IN ($1, $2) AND room_id = $3")
             .bind::<diesel::sql_types::Text,_>(alice.as_str())
             .bind::<diesel::sql_types::Text,_>(bob.as_str())
@@ -1216,7 +1214,7 @@ mod device_version_tests {
         let versions: Vec<String> = remote_device_list_versions::table
             .filter(remote_device_list_versions::user_id.eq(&bob))
             .select(remote_device_list_versions::stream_id)
-            .load(&mut crate::data::connect().await.unwrap())
+            .load(&mut crate::data::db())
             .await
             .unwrap();
         assert_eq!(versions, ["0"]);
@@ -1257,7 +1255,7 @@ mod device_version_tests {
             .filter(remote_device_list_versions::user_id.eq(&bob))
             .filter(remote_device_list_versions::is_initial_snapshot.eq(true))
             .select(remote_device_list_versions::stream_id)
-            .load(&mut crate::data::connect().await.unwrap())
+            .load(&mut crate::data::db())
             .await
             .unwrap();
         assert!(initialized.is_empty());
@@ -1265,7 +1263,7 @@ mod device_version_tests {
         // A response delayed across publication is not eligible to initialize
         // the stream. Barriers establish this order without timing or sleeps.
         diesel::delete(room_users::table.filter(room_users::user_id.eq(&bob)))
-            .execute(&mut crate::data::connect().await.unwrap())
+            .execute(&mut crate::data::db())
             .await
             .unwrap();
         let (origin, seen, release, peer) = snapshot_peer(
@@ -1360,7 +1358,7 @@ mod device_version_tests {
 
     async fn many_rooms() {
         let (service, key, _alice, bob, _room) = setup().await;
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::connect();
         diesel::sql_query("INSERT INTO rooms (id, version, is_public, min_depth, has_auth_chain_index, created_at) SELECT '!device-many-' || number || ':' || $1, '11', false, 0, false, 0 FROM generate_series(1, 16500) AS seed(number)")
             .bind::<diesel::sql_types::Text,_>(LOCAL)
             .execute(&mut conn).await.unwrap();
@@ -1375,7 +1373,7 @@ mod device_version_tests {
         let response = send_update(&service, &key, "many-shared-rooms", 1, "BOB").await;
         assert_eq!(response.0, StatusCode::OK, "{:?}", response.1);
         assert_eq!(crate::data::curr_sn().await.unwrap(), before + 1);
-        let mut conn = crate::data::connect().await.unwrap();
+        let mut conn = crate::data::connect();
         let count: i64 = e2e_key_changes::table
             .filter(e2e_key_changes::user_id.eq(&bob))
             .count()

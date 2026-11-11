@@ -1,13 +1,12 @@
 //! Publication points select live events; qualified pages retain topology and
 //! the frozen publication window without reinterpreting historical tokens.
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use indexmap::IndexMap;
 
 use crate::core::client::filter::RoomEventFilter;
 use crate::core::identifiers::*;
 use crate::core::{Direction, Seqnum};
-use crate::data::connect;
 use crate::data::schema::*;
 use crate::event::BatchToken;
 use crate::{AppResult, MatrixError, SnPduEvent};
@@ -227,7 +226,7 @@ pub(crate) async fn position(room_id: &RoomId, identity: Seqnum) -> AppResult<Op
         .filter(events::is_rejected.eq(false))
         .filter(events::stream_ordering.ge(0))
         .select(event_points::live_published_sn)
-        .first::<Option<Seqnum>>(&mut connect().await?)
+        .first::<Option<Seqnum>>(&mut crate::data::db())
         .await
         .optional()?
         .flatten())
@@ -242,7 +241,7 @@ pub(crate) async fn has_history(room_id: &RoomId) -> AppResult<bool> {
             .filter(events::soft_failed.eq(false))
             .filter(events::is_rejected.eq(false)),
     ))
-    .get_result(&mut connect().await?)
+    .get_result(&mut crate::data::db())
     .await?)
 }
 
@@ -261,6 +260,6 @@ pub(crate) async fn gaps(
         .bind::<diesel::sql_types::Text,_>(room.as_str())
         .bind::<diesel::sql_types::Nullable<diesel::sql_types::BigInt>,_>(lower)
         .bind::<diesel::sql_types::Nullable<diesel::sql_types::BigInt>,_>(upper)
-        .load::<Gap>(&mut connect().await?).await?;
+        .load::<Gap>(&mut crate::data::db()).await?;
     Ok(gaps.into_iter().map(|gap| gap.position).collect())
 }

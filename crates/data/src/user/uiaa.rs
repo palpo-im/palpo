@@ -1,11 +1,11 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 
+use crate::DataResult;
 use crate::core::client::uiaa::UiaaInfo;
 use crate::core::identifiers::*;
 use crate::core::serde::{CanonicalJsonValue, JsonValue};
 use crate::schema::*;
-use crate::{DataResult, connect};
 
 /// Upsert (when `uiaa_info` is `Some`) or delete (when `None`) the UIAA session
 /// row for a `(user, device, session)` triple.
@@ -31,7 +31,7 @@ pub async fn update_session(
             ))
             .do_update()
             .set(user_uiaa_datas::uiaa_info.eq(&uiaa_info))
-            .execute(&mut connect().await?)
+            .execute(&mut crate::db())
             .await?;
     } else {
         diesel::delete(
@@ -40,7 +40,7 @@ pub async fn update_session(
                 .filter(user_uiaa_datas::device_id.eq(device_id))
                 .filter(user_uiaa_datas::session.eq(session)),
         )
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     };
     Ok(())
@@ -57,7 +57,7 @@ pub async fn get_session(
         .filter(user_uiaa_datas::device_id.eq(device_id))
         .filter(user_uiaa_datas::session.eq(session))
         .select(user_uiaa_datas::uiaa_info)
-        .first::<JsonValue>(&mut connect().await?)
+        .first::<JsonValue>(&mut crate::db())
         .await?;
     Ok(serde_json::from_value(uiaa_info)?)
 }
@@ -77,7 +77,7 @@ pub async fn set_uiaa_request(
             .filter(user_uiaa_datas::session.eq(session)),
     )
     .set(user_uiaa_datas::request_body.eq(Some(&request_body)))
-    .execute(&mut connect().await?)
+    .execute(&mut crate::db())
     .await?;
     Ok(())
 }
@@ -93,7 +93,7 @@ pub async fn get_uiaa_request(
         .filter(user_uiaa_datas::device_id.eq(device_id))
         .filter(user_uiaa_datas::session.eq(session))
         .select(user_uiaa_datas::request_body)
-        .first::<Option<JsonValue>>(&mut connect().await?)
+        .first::<Option<JsonValue>>(&mut crate::db())
         .await
         .optional()?
         .flatten();
@@ -125,7 +125,7 @@ pub async fn create_registration_session(
             user_uiaa_datas::uiaa_info.eq(&info),
             user_uiaa_datas::request_body.eq(Some(&binding)),
         ))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::db())
         .await?;
     Ok(())
 }
@@ -144,7 +144,7 @@ pub async fn registration_session(
         #[diesel(sql_type = Json)]
         uiaa_info: JsonValue,
     }
-    let mut conn = connect().await?;
+    let mut conn = crate::db();
     // JSONB numeric comparison avoids casting arbitrary legacy request bodies.
     diesel::sql_query(
         "DELETE FROM user_uiaa_datas WHERE user_id = $1 AND device_id = $2

@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use horme::RunQueryDsl;
 use tokio::sync::RwLock;
 
 use crate::core::events::direct::DirectEventContent;
@@ -119,7 +120,6 @@ pub async fn update_membership(
     .await?
     {
         connect()
-            .await?
             .transaction::<_, AppError, _>(async |conn| {
                 crate::data::user::lock_invite_user_write(conn, user_id).await?;
                 replace_membership_with_conn(conn, &row).await

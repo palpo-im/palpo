@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use horme::RunQueryDsl;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 
@@ -7,10 +7,10 @@ use crate::core::client::directory::{SetRoomVisibilityReqBody, VisibilityResBody
 use crate::core::events::StateEventType;
 use crate::core::identifiers::*;
 use crate::core::room::Visibility;
+use crate::data::diesel_exists;
 use crate::data::room::DbRoom;
 use crate::data::schema::*;
 use crate::data::user::DbUser;
-use crate::data::{connect, diesel_exists};
 use crate::{
     AppError, AppResult, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, config,
     empty_ok, json_ok,
@@ -27,7 +27,7 @@ pub(super) async fn get_visibility(
     let query = rooms::table
         .filter(rooms::id.eq(&room_id))
         .filter(rooms::is_public.eq(true));
-    let visibility = if diesel_exists!(query, &mut connect().await?)? {
+    let visibility = if diesel_exists!(query, &mut crate::data::db())? {
         Visibility::Public
     } else {
         Visibility::Private
@@ -48,7 +48,7 @@ pub(super) async fn set_visibility(
     let room_id = room_id.into_inner();
     let room = rooms::table
         .find(&room_id)
-        .first::<DbRoom>(&mut connect().await?)
+        .first::<DbRoom>(&mut crate::data::db())
         .await?;
 
     let visibility_is_public = body.visibility == Visibility::Public;
@@ -70,7 +70,7 @@ pub(super) async fn set_visibility(
 
     diesel::update(&room)
         .set(rooms::is_public.eq(visibility_is_public))
-        .execute(&mut connect().await?)
+        .execute(&mut crate::data::db())
         .await?;
     empty_ok()
 }
