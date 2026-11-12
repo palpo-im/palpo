@@ -78,3 +78,15 @@ CP-04：过滤房间保留 captured frame 的成员初始集合/增量汇总，�
 CP-05：通过 PostgreSQL DISTINCT ON 投影 user/type/JSON thread 键的最新回执，保留 append-only 日志和 federation 游标；新增匹配 expression 索引。read_receipts 同步采用安全分支 viewer 参数，禁止把他人私密回执加入投影。返回值规模随当前 receipt 键数增长，不再随同一键的历史更新次数增长；数据库仍需要处理历史索引，不声称 SQL 扫描时间与历史完全无关。额外的汇总表/日志回收策略需另行根据负载测量决定。
 
 新增独立数据库回归：concurrency_review_tests 两项、watcher::review_tests 一项、sync_v3::resource_review_tests 一项；CI exact-name 列表在 default/all features 分别新建空库、独立进程运行。开发分支仅执行 rustfmt 和 git diff --check；编译、数据库及 HTTP 回归由主 agent 在原 workspace 原生 target 集中执行，结果应补入 PR。CP-R1 尚未复现，未改动 MutexMap。
+
+
+### 交叉复核后的补充修复及限制
+
+公共 `append_pdu`（联邦/直接 outlier promotion）现在在最终发布阶段取得与本地写入、purge 相同的数据库 append fence；本地 builder 已持有 fence 时调用私有 body，避免跨连接重复取同一锁。soft-fail 的 tip read/replace 同样取得该 fence。联邦网络验证、缺失状态抓取未被纳入新增 fence。forward tip 删除/插入改为单事务，purge 排除仍在验证/升级中的 outlier。新增 trigger+advisory barrier 回归检验暂停的 promotion、原 tip 集可见性及 purge 等待行为。
+
+latest receipt 查询返回独立 event 向量，v3 可保留同一 event/type/user 的 unthreaded、main、thread 三种回执。v5 的现有 MSC3960 单事件 map wire 结构不能表达同一嵌套键的多个 thread 值，保持兼容格式；投影向量按 sn 升序输出，使 combine 的冲突明确选择最新 sn，不再按 thread 字典序覆盖。本分支不宣称 v5 能无损表达此特殊多 thread 情况。
+
+watcher 修复注册时间窗口及 receipt/presence 覆盖，但 MAX(sn) 摘要仍不能检测低 sn 事务在高 sn 事务之后提交的情况。这需要对各流建立提交可见 publication 水位/fence；现阶段作为后续建设项，长轮询仍可能等到超时才返回这种迟提交更新。未宣称所有提交顺序竞态已消除。
+
+
+wire 格式参考：[MSC3960 旧扩展](https://github.com/matrix-org/matrix-spec-proposals/blob/kegan/ssext-receipts/proposals/3960-sliding-sync-receipts.md) 定义每房间单 m.receipt；[MSC4551 后继扩展](https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4551-sliding-sync-extension-receipts.md) 仍定义每房间单 receipt content map，且移除了 type/content wrapper。当前项目采用旧 wrapper 的协议升级是独立后续项，本专项保持兼容。

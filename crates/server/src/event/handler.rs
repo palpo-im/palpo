@@ -901,20 +901,29 @@ pub async fn process_to_timeline_pdu(
         // Now we calculate the set of extremities this room has after the incoming event has been
         // applied. We start with the previous extremities (aka leaves)
         debug!("calculating extremities");
-        let mut extremities: BTreeSet<_> = state::get_forward_extremities(&incoming_pdu.room_id)
-            .await?
-            .into_iter()
-            .collect();
+        crate::data::coordination_connect()
+            .transaction::<_, AppError, _>(async |conn| {
+                crate::data::room::timeline::lock_event_append(conn, &incoming_pdu.room_id).await?;
+                let mut extremities: BTreeSet<_> =
+                    state::get_forward_extremities(&incoming_pdu.room_id)
+                        .await?
+                        .into_iter()
+                        .collect();
 
-        // Remove any forward extremities that are referenced by this incoming event's prev_events
-        extremities.retain(|event_id| !incoming_pdu.prev_events.contains(event_id));
+                // Remove any forward extremities that are referenced by this incoming event's
+                // prev_events
+                extremities.retain(|event_id| !incoming_pdu.prev_events.contains(event_id));
 
-        let extremities = extremities
-            .iter()
-            .map(Borrow::borrow)
-            .chain(once(event_id.borrow()));
-        state::set_forward_extremities(&incoming_pdu.room_id, extremities, &state_lock).await?;
-        state::update_backward_extremities(&incoming_pdu).await?;
+                let extremities = extremities
+                    .iter()
+                    .map(Borrow::borrow)
+                    .chain(once(event_id.borrow()));
+                state::set_forward_extremities(&incoming_pdu.room_id, extremities, &state_lock)
+                    .await?;
+                state::update_backward_extremities(&incoming_pdu).await?;
+                Ok(())
+            })
+            .await?;
         // Soft fail, we keep the event as an outlier but don't add it to the timeline
         warn!("event was soft failed: {:?}", incoming_pdu);
         crate::room::pdu_metadata::mark_event_soft_failed(&incoming_pdu.event_id).await?;

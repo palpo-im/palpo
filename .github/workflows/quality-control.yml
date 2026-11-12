@@ -183,6 +183,7 @@ jobs:
           # Configuration and pools are process-global. Give each exact case
           # its own process and empty database in both supported feature modes.
           cases=(
+            sync_v3::resource_review_tests::review_live_promotion_and_purge_share_fence_and_atomic_tips
             sync_v3::resource_review_tests::review_filtered_room_skips_payloads_and_keeps_independent_membership
             concurrency_review_tests::review_purge_preserves_tips_and_resumes_committed_batches
             concurrency_review_tests::review_receipt_latest_projection_retains_log_and_threads

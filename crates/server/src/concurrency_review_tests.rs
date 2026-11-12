@@ -1,9 +1,8 @@
 //! Run each case alone with an empty PALPO_TEST_DATABASE_URL (CI exact-name list).
-use crate::{
-    core::{RoomId, UserId},
-    data,
-};
 use horme::RunQueryDsl;
+
+use crate::core::{RoomId, UserId};
+use crate::data;
 
 #[derive(diesel::QueryableByName)]
 struct Count {
@@ -85,28 +84,53 @@ async fn review_receipt_latest_projection_retains_log_and_threads() {
     let public = data::room::receipt::read_receipts(room, 0, Some(bob))
         .await
         .unwrap();
-    let json = serde_json::to_value(&public[alice]).unwrap();
-    assert_eq!(
-        json.as_object().unwrap().len(),
-        3,
-        "one latest value per public thread key"
+    let events: Vec<_> = public
+        .iter()
+        .map(|(_, content)| serde_json::to_value(content).unwrap())
+        .collect();
+    assert_eq!(events.len(), 3, "one latest event per public thread key");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["$event-1000"]["m.read"][alice.as_str()]["ts"] == 1001)
     );
-    assert_eq!(json["$event-1000"]["m.read"][alice.as_str()]["ts"], 1001);
-    assert_eq!(json["$main"]["m.read"][alice.as_str()]["thread_id"], "main");
-    assert_eq!(
-        json["$thread"]["m.read"][alice.as_str()]["thread_id"],
-        "$root"
-    );
-    assert!(json.get("$private").is_none());
     let own = data::room::receipt::read_receipts(room, 0, Some(alice))
         .await
         .unwrap();
     assert!(
-        own[alice]
-            .0
-            .keys()
-            .any(|event| event.as_str() == "$private")
+        own.iter()
+            .any(|(_, content)| content.0.keys().any(|event| event.as_str() == "$private"))
     );
+    // All three thread keys can point at the same event without overwriting.
+    diesel::sql_query("UPDATE event_receipts SET event_id='$shared' WHERE sn IN (1001,1002,1003)")
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    let same = data::room::receipt::read_receipts(room, 0, Some(bob))
+        .await
+        .unwrap();
+    let mut threads: Vec<_> = same
+        .iter()
+        .map(|(_, content)| {
+            let event = serde_json::to_value(content).unwrap();
+            event["$shared"]["m.read"][alice.as_str()]["thread_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned()
+        })
+        .collect();
+    threads.sort();
+    assert_eq!(threads, vec!["", "$root", "main"]);
+    let collapsed = crate::core::events::receipt::combine_receipt_event_contents(
+        same.into_iter().map(|(_, content)| content).collect(),
+    );
+    let json = serde_json::to_value(collapsed).unwrap();
+    assert_eq!(
+        json["$shared"]["m.read"][alice.as_str()]["ts"],
+        1003,
+        "single-map sliding sync collision must select newest stream value"
+    );
+
     assert!(
         data::room::receipt::read_receipts(room, 1005, Some(alice))
             .await

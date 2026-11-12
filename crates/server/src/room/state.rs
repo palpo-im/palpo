@@ -482,23 +482,30 @@ where
     I: Iterator<Item = &'a EventId> + Send + 'a,
 {
     let event_ids = event_ids.collect::<Vec<_>>();
-    diesel::delete(
-        event_forward_extremities::table
-            .filter(event_forward_extremities::room_id.eq(room_id))
-            .filter(event_forward_extremities::event_id.ne_all(&event_ids)),
-    )
-    .execute(&mut crate::data::db())
-    .await?;
-    for event_id in event_ids {
-        diesel::insert_into(event_forward_extremities::table)
-            .values((
-                event_forward_extremities::room_id.eq(room_id),
-                event_forward_extremities::event_id.eq(event_id),
-            ))
-            .on_conflict_do_nothing()
-            .execute(&mut crate::data::db())
+    // The caller holds the cross-process append fence. Publish the complete set
+    // atomically so readers never observe a delete/insert gap.
+    connect()
+        .transaction::<_, AppError, _>(async |conn| {
+            diesel::delete(
+                event_forward_extremities::table
+                    .filter(event_forward_extremities::room_id.eq(room_id))
+                    .filter(event_forward_extremities::event_id.ne_all(&event_ids)),
+            )
+            .execute(conn)
             .await?;
-    }
+            for event_id in event_ids {
+                diesel::insert_into(event_forward_extremities::table)
+                    .values((
+                        event_forward_extremities::room_id.eq(room_id),
+                        event_forward_extremities::event_id.eq(event_id),
+                    ))
+                    .on_conflict_do_nothing()
+                    .execute(conn)
+                    .await?;
+            }
+            Ok(())
+        })
+        .await?;
     Ok(())
 }
 

@@ -17,12 +17,12 @@ pub async fn read_receipts(
     room_id: &RoomId,
     since_sn: Seqnum,
     viewer: Option<&UserId>,
-) -> DataResult<BTreeMap<OwnedUserId, ReceiptEventContent>> {
+) -> DataResult<Vec<(OwnedUserId, ReceiptEventContent)>> {
     // Keep the append-only log for federation cursors, but project only each
     // changed receipt key's latest value in SQL. Do not materialize its history.
     let thread =
         diesel::dsl::sql::<diesel::sql_types::Text>("COALESCE(json_data->>'thread_id', '')");
-    let rows = event_receipts::table
+    let mut rows = event_receipts::table
         .filter(event_receipts::sn.ge(since_sn))
         .filter(event_receipts::room_id.eq(room_id))
         .filter(
@@ -39,21 +39,25 @@ pub async fn read_receipts(
         ))
         .load::<DbReceipt>(&mut crate::db())
         .await?;
-    let mut receipts: BTreeMap<OwnedUserId, ReceiptEventContent> = BTreeMap::new();
+    // Consumers which must collapse receipts into a single wire map (MSC3960)
+    // resolve unrepresentable same-target collisions by stream recency, never
+    // by the thread key's alphabetical position in DISTINCT ON ordering.
+    rows.sort_by_key(|row| row.sn);
+    // Separate events preserve different thread receipts for the same event,
+    // type and user: a single nested receipt map has only one value at that key.
+    let mut receipts = Vec::with_capacity(rows.len());
     for item in rows {
-        receipts
-            .entry(item.user_id.clone())
-            .or_default()
-            .0
-            .entry(item.event_id)
-            .or_default()
-            .insert(
+        let content = ReceiptEventContent(BTreeMap::from([(
+            item.event_id,
+            BTreeMap::from([(
                 ReceiptType::from(item.ty),
                 BTreeMap::from([(
-                    item.user_id,
+                    item.user_id.clone(),
                     serde_json::from_value(item.json_data).unwrap_or_default(),
                 )]),
-            );
+            )]),
+        )]));
+        receipts.push((item.user_id, content));
     }
 
     Ok(receipts)
