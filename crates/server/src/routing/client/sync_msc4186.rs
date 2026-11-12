@@ -84,8 +84,11 @@ pub(super) async fn sync_events_v5(
     let profile_updates = req_body.extensions.profiles.enabled.unwrap_or(false);
     #[cfg(not(feature = "unstable-msc4262"))]
     let profile_updates = false;
-    let watch_baseline =
-        crate::watcher::load_watch_snapshot(sender_id, device_id, profile_updates).await?;
+    let watch_baseline = if long_poll_timeout(args.timeout).is_zero() {
+        None
+    } else {
+        Some(crate::watcher::load_watch_snapshot(sender_id, device_id, profile_updates).await?)
+    };
 
     let mut res_body =
         crate::sync_v5::sync_events(sender_id, device_id, since.clone(), &req_body, &known_rooms)
@@ -108,14 +111,16 @@ pub(super) async fn sync_events_v5(
             .map(|pos| pos.event_sn);
         #[cfg(not(feature = "unstable-msc4262"))]
         let profile_after_sn = None;
-        let watcher = crate::watcher::watch_from(
-            sender_id,
-            device_id,
-            profile_updates,
-            profile_after_sn,
-            watch_baseline,
-        );
-        _ = tokio::time::timeout(duration, watcher).await;
+        if let Some(watch_baseline) = watch_baseline {
+            let watcher = crate::watcher::watch_from(
+                sender_id,
+                device_id,
+                profile_updates,
+                profile_after_sn,
+                watch_baseline,
+            );
+            _ = tokio::time::timeout(duration, watcher).await;
+        }
         res_body =
             crate::sync_v5::sync_events(sender_id, device_id, since, &req_body, &known_rooms)
                 .await?;
