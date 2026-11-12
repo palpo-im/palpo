@@ -1558,10 +1558,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an empty dedicated PostgreSQL database"]
     async fn review_security_receipts_sessions_and_oidc_bindings() {
-        use crate::data::schema::*;
         use diesel::prelude::*;
         use horme::RunQueryDsl;
         use salvo::test::{ResponseExt, TestClient};
+
+        use crate::data::schema::*;
         crate::test_database::init();
         crate::config::CONFIG.get_or_init(|| {
             serde_json::from_value(serde_json::json!({
