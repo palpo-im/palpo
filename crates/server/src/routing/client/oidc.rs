@@ -1907,14 +1907,18 @@ mod tests {
             .is_err()
         );
         // Expiry must be enforced on cache hits as well as fresh database reads.
-        diesel::update(user_access_tokens::table.filter(user_access_tokens::user_id.eq(&a.id)))
-            .set((
-                user_access_tokens::token.eq("short-lived"),
-                user_access_tokens::expires_at.eq(Some(UnixMillis(UnixMillis::now().get() + 500))),
-            ))
-            .execute(&mut crate::data::db())
-            .await
-            .unwrap();
+        diesel::update(
+            user_access_tokens::table
+                .filter(user_access_tokens::user_id.eq(&a.id))
+                .filter(user_access_tokens::device_id.eq(&device)),
+        )
+        .set((
+            user_access_tokens::token.eq("short-lived"),
+            user_access_tokens::expires_at.eq(Some(UnixMillis(UnixMillis::now().get() + 500))),
+        ))
+        .execute(&mut crate::data::db())
+        .await
+        .unwrap();
         crate::data::user::invalidate_user(&a.id);
         assert!(
             crate::data::user::authenticate_token(
