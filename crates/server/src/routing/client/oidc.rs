@@ -1649,7 +1649,7 @@ mod tests {
         let own = crate::data::room::receipt::read_receipts(&room, 0, Some(&a.id))
             .await
             .unwrap();
-        assert!(own.contains_key(&a.id));
+        assert!(own.iter().any(|(user, _)| user == &a.id));
         assert!(
             crate::data::room::receipt::read_receipts(&room, 0, Some(&b.id))
                 .await
