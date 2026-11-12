@@ -17,11 +17,17 @@ use crate::{DataResult, next_sn};
 pub async fn read_receipts(
     room_id: &RoomId,
     since_sn: Seqnum,
+    viewer: Option<&UserId>,
 ) -> DataResult<BTreeMap<OwnedUserId, ReceiptEventContent>> {
     let _list: Vec<(OwnedUserId, Seqnum, RawJson<AnySyncEphemeralRoomEvent>)> = Vec::new();
     let receipts = event_receipts::table
         .filter(event_receipts::sn.ge(since_sn))
         .filter(event_receipts::room_id.eq(room_id))
+        .filter(
+            event_receipts::ty
+                .ne(ReceiptType::ReadPrivate.to_string())
+                .or(event_receipts::user_id.nullable().eq(viewer)),
+        )
         .order_by(event_receipts::sn.desc())
         .load::<DbReceipt>(&mut crate::db())
         .await?;

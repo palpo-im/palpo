@@ -847,7 +847,9 @@ async fn load_joined_room(
     }
 
     let mut edus: Vec<RawJson<AnySyncEphemeralRoomEvent>> = Vec::new();
-    for (_, content) in data::room::receipt::read_receipts(room_id, since_tk.event_sn()).await? {
+    for (_, content) in
+        data::room::receipt::read_receipts(room_id, since_tk.event_sn(), Some(sender_id)).await?
+    {
         let receipt = SyncReceiptEvent { content };
         edus.push(RawJson::new(&receipt)?.cast());
     }

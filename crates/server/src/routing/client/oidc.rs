@@ -800,7 +800,15 @@ pub async fn oidc_callback(req: &mut Request, res: &mut Response) -> AppResult<(
     };
 
     // Step 12: Create or retrieve Matrix user account
-    let user = create_or_get_user(&matrix_user_id, &display_name, avatar_url, oidc_config).await?;
+    let user = create_or_get_user(
+        &matrix_user_id,
+        &display_name,
+        avatar_url,
+        oidc_config,
+        &provider_info.issuer,
+        &user_info.sub,
+    )
+    .await?;
 
     if let Some(redirect_url) = session.redirect_url.as_deref() {
         let login_token = utils::random_string(TOKEN_LENGTH);
@@ -1340,6 +1348,8 @@ async fn create_or_get_user(
     display_name: &str,
     avatar_url: Option<OwnedMxcUri>,
     oidc_config: &crate::config::OidcConfig,
+    issuer: &str,
+    subject: &str,
 ) -> AppResult<DbUser> {
     use diesel::prelude::*;
     use horme::{OptionalExtension as _, RunQueryDsl};
@@ -1351,7 +1361,7 @@ async fn create_or_get_user(
     let parsed_user_id = UserId::parse(user_id)
         .map_err(|_| MatrixError::invalid_param("Invalid Matrix user ID format"))?;
 
-    let new_user = crate::data::user::NewDbUser {
+    let mut new_user = crate::data::user::NewDbUser {
         is_local: parsed_user_id.server_name().is_local(),
         localpart: parsed_user_id.localpart().to_string(),
         server_name: parsed_user_id.server_name().to_owned(),
@@ -1365,42 +1375,67 @@ async fn create_or_get_user(
 
     connect()
         .transaction::<_, AppError, _>(async move |conn| {
-            let mut user = users::table
-                .filter(users::id.eq(&parsed_user_id))
-                .for_update()
-                .first::<DbUser>(conn)
+            // Serialize the exact identity, including case-sensitive subject bytes.
+            // The unique constraint remains the final cross-instance fence.
+            let identity = serde_json::to_string(&(issuer, subject))?;
+            diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, 831140))")
+                .bind::<diesel::sql_types::Text, _>(&identity)
+                .execute(conn)
+                .await?;
+            let bound = oidc_identity_bindings::table
+                .filter(oidc_identity_bindings::issuer.eq(issuer))
+                .filter(oidc_identity_bindings::subject.eq(subject))
+                .select(oidc_identity_bindings::user_id)
+                .first::<String>(conn)
                 .await
                 .optional()?;
-
-            if user.is_none() {
+            let mut user = if let Some(bound) = bound {
+                let bound = UserId::parse(bound)?;
+                users::table
+                    .find(&bound)
+                    .for_update()
+                    .first::<DbUser>(conn)
+                    .await?
+            } else {
                 if !oidc_config.allow_registration {
                     return Err(MatrixError::forbidden(
-                        "New user registration via OIDC is disabled",
+                        "OIDC identity is not linked to an account",
                         None,
                     )
                     .into());
                 }
-
-                tracing::info!("Creating new Matrix user account: {}", user_id);
-                diesel::insert_into(users::table)
-                    .values(&new_user)
-                    .on_conflict(users::id)
-                    .do_nothing()
-                    .execute(conn)
-                    .await?;
-
-                // Lock the row after the conflict-safe insert. This serializes
-                // concurrent first logins before the nullable room_id profile check.
-                user = Some(
-                    users::table
-                        .filter(users::id.eq(&parsed_user_id))
-                        .for_update()
-                        .first::<DbUser>(conn)
-                        .await?,
-                );
-            }
-
-            let mut user = user.expect("OIDC user was selected or inserted");
+                // Never attach a newly proved external identity to an existing MXID.
+                // Collision allocation stays transactional with the binding insert.
+                let mut candidate = parsed_user_id.clone();
+                loop {
+                    new_user.id = candidate.clone();
+                    new_user.localpart = candidate.localpart().to_owned();
+                    let inserted = diesel::insert_into(users::table)
+                        .values(&new_user)
+                        .on_conflict(users::id)
+                        .do_nothing()
+                        .get_result::<DbUser>(conn)
+                        .await
+                        .optional()?;
+                    if let Some(inserted) = inserted {
+                        diesel::insert_into(oidc_identity_bindings::table)
+                            .values((
+                                oidc_identity_bindings::issuer.eq(issuer),
+                                oidc_identity_bindings::subject.eq(subject),
+                                oidc_identity_bindings::user_id.eq(candidate.as_str()),
+                            ))
+                            .execute(conn)
+                            .await?;
+                        break inserted;
+                    }
+                    candidate = UserId::parse(format!(
+                        "@oidc_{}:{}",
+                        utils::random_string(32).to_lowercase(),
+                        parsed_user_id.server_name()
+                    ))?;
+                }
+            };
+            user::ensure_account_usable(&user)?;
             if user.is_guest {
                 diesel::update(users::table.find(&user.id))
                     .set(users::is_guest.eq(false))
@@ -1519,6 +1554,207 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PostgreSQL database"]
+    async fn review_security_receipts_sessions_and_oidc_bindings() {
+        use crate::data::schema::*;
+        use diesel::prelude::*;
+        use horme::RunQueryDsl;
+        use salvo::test::{ResponseExt, TestClient};
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(serde_json::json!({
+                "server_name": "security.example", "db": {"url": "unused"}
+            }))
+            .unwrap()
+        });
+        let cfg = crate::config::OidcConfig {
+            allow_registration: true,
+            ..Default::default()
+        };
+        let candidate = "@alice_ab:security.example";
+        let a = create_or_get_user(candidate, "Alice", None, &cfg, "https://one.example", "a:b")
+            .await
+            .unwrap();
+        let b = create_or_get_user(candidate, "Bob", None, &cfg, "https://two.example", "a:b")
+            .await
+            .unwrap();
+        let c = create_or_get_user(candidate, "Carol", None, &cfg, "https://one.example", "ab")
+            .await
+            .unwrap();
+        assert_ne!(a.id, b.id);
+        assert_ne!(a.id, c.id);
+        // A rename must preserve the exact bound identity and account.
+        let renamed = create_or_get_user(
+            "@new_name:security.example",
+            "Renamed",
+            None,
+            &cfg,
+            "https://one.example",
+            "a:b",
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.id, a.id);
+        let closed = crate::config::OidcConfig {
+            allow_registration: false,
+            ..Default::default()
+        };
+        assert!(
+            create_or_get_user(
+                candidate,
+                "Unlinked",
+                None,
+                &closed,
+                "https://three.example",
+                "a:b"
+            )
+            .await
+            .is_err()
+        );
+
+        let room = crate::core::RoomId::parse("!security:security.example").unwrap();
+        let event = crate::core::EventId::parse("$private-security").unwrap();
+        crate::data::room::receipt::set_private_read(&room, &a.id, &event, 1)
+            .await
+            .unwrap();
+        let own = crate::data::room::receipt::read_receipts(&room, 0, Some(&a.id))
+            .await
+            .unwrap();
+        assert!(own.contains_key(&a.id));
+        assert!(
+            crate::data::room::receipt::read_receipts(&room, 0, Some(&b.id))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            crate::data::room::receipt::read_receipts(&room, 0, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let device = OwnedDeviceId::from("SECURITY");
+        crate::data::user::device::create_device(&a.id, &device, "initial", None, None)
+            .await
+            .unwrap();
+        let now = UnixMillis::now().get();
+        let absolute = now + 50_000;
+        crate::data::user::device::set_refresh_token(
+            &a.id,
+            &device,
+            "refresh-old",
+            now + 100_000,
+            absolute,
+        )
+        .await
+        .unwrap();
+        let service = Service::new(crate::routing::client::session::public_router());
+        let mut response = TestClient::post("http://localhost/refresh")
+            .json(&serde_json::json!({"refresh_token": "refresh-old"}))
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        let body: serde_json::Value = response.take_json().await.unwrap();
+        let access = body["access_token"].as_str().unwrap();
+        let next = body["refresh_token"].as_str().unwrap();
+        assert!(body["expires_in_ms"].as_u64().unwrap() <= 50_000);
+        assert!(
+            crate::data::user::authenticate_token("initial", std::time::Duration::ZERO)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let auth =
+            crate::data::user::authenticate_token(access, std::time::Duration::from_secs(3600))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(auth.expires_at, Some(UnixMillis(absolute)));
+        let stored = user_refresh_tokens::table
+            .filter(user_refresh_tokens::token.eq(next))
+            .first::<crate::data::user::DbRefreshToken>(&mut crate::data::db())
+            .await
+            .unwrap();
+        assert_eq!(stored.ultimate_session_expires_at, absolute as i64);
+        assert!(
+            crate::routing::client::session::rotate_refresh_token(
+                "refresh-old",
+                "bad",
+                "bad-refresh",
+                now
+            )
+            .await
+            .is_err()
+        );
+        let (first, second) = tokio::join!(
+            crate::routing::client::session::rotate_refresh_token(
+                next,
+                "winner-one",
+                "refresh-one",
+                now + 1
+            ),
+            crate::routing::client::session::rotate_refresh_token(
+                next,
+                "winner-two",
+                "refresh-two",
+                now + 1
+            )
+        );
+        assert_ne!(first.is_ok(), second.is_ok());
+        let winner = if first.is_ok() {
+            "refresh-one"
+        } else {
+            "refresh-two"
+        };
+        assert!(
+            crate::routing::client::session::rotate_refresh_token(
+                winner,
+                "expired",
+                "expired-refresh",
+                absolute
+            )
+            .await
+            .is_err()
+        );
+        // Expiry must be enforced on cache hits as well as fresh database reads.
+        diesel::update(user_access_tokens::table.filter(user_access_tokens::user_id.eq(&a.id)))
+            .set((
+                user_access_tokens::token.eq("short-lived"),
+                user_access_tokens::expires_at.eq(Some(UnixMillis(UnixMillis::now().get() + 500))),
+            ))
+            .execute(&mut crate::data::db())
+            .await
+            .unwrap();
+        crate::data::user::invalidate_user(&a.id);
+        assert!(
+            crate::data::user::authenticate_token(
+                "short-lived",
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+            .is_some()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        assert!(
+            crate::data::user::authenticate_token(
+                "short-lived",
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            crate::data::user::authenticate_token("short-lived", std::time::Duration::ZERO)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
 
     fn provider_with_mapping(mapping: &[(&str, &str)]) -> OidcProviderConfig {
         OidcProviderConfig {
@@ -1651,6 +1887,8 @@ mod tests {
             "Mapped Name",
             Some(avatar_url.clone()),
             &oidc_config,
+            "https://profile.example",
+            "profile-subject",
         )
         .await
         .unwrap();
@@ -1664,9 +1902,16 @@ mod tests {
         crate::data::user::set_display_name(&user.id, "Chosen Name")
             .await
             .unwrap();
-        create_or_get_user(&user_id, "Provider Changed", None, &oidc_config)
-            .await
-            .unwrap();
+        create_or_get_user(
+            &user_id,
+            "Provider Changed",
+            None,
+            &oidc_config,
+            "https://profile.example",
+            "profile-subject",
+        )
+        .await
+        .unwrap();
         assert_eq!(
             crate::data::user::display_name(&user.id)
                 .await

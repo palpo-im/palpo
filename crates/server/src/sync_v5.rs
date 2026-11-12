@@ -1395,17 +1395,18 @@ async fn process_rooms(
                 None
             };
 
-            let mut receipts = data::room::receipt::read_receipts(room_id, *room_since_sn)
-                .await?
-                .into_iter()
-                .filter_map(|(read_user, content)| {
-                    if !ignored_users.contains(&read_user) {
-                        Some(content)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
+            let mut receipts =
+                data::room::receipt::read_receipts(room_id, *room_since_sn, Some(sender_id))
+                    .await?
+                    .into_iter()
+                    .filter_map(|(read_user, content)| {
+                        if !ignored_users.contains(&read_user) {
+                            Some(content)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
 
             if let Some(private_read_event) = private_read_event {
                 receipts.push(private_read_event);

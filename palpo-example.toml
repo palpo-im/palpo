@@ -341,11 +341,14 @@
 
 # This item is undocumented. Please contribute documentation for it.
 #
-# refresh_token_ttl =
+# access_token_ttl = 60000
+
+# Refresh credential idle lifetime in milliseconds.
+# refresh_token_ttl = 120000
 
 # This item is undocumented. Please contribute documentation for it.
 #
-# session_ttl =
+# session_ttl = 3600000
 
 # List/vector of room IDs or room aliases that palpo will make newly
 # registered users join. The rooms specified must be rooms that you have
@@ -1000,6 +1003,9 @@
 # from a remote homeserver via federation. Defaults to 100 MiB.
 #
 # max_remote_media_size = 104857600
+
+# Maximum active remote content and thumbnail downloads; includes streaming bodies.
+# max_concurrent_remote_downloads = 16
 
 # Check consistency of the media directory at startup:
 # 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching

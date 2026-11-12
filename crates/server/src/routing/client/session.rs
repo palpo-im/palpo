@@ -28,24 +28,25 @@ use crate::{
 };
 
 pub fn public_router() -> Router {
-    Router::new().push(
-        Router::with_path("login")
-            .get(login_types)
-            .post(login)
-            .push(
-                Router::with_path("sso/redirect")
-                    .get(redirect)
-                    .push(Router::with_path("{idp_id}").get(provider_url)),
-            )
-            .push(Router::with_path("sso/callback").get(delegated_sso_callback)),
-    )
+    Router::new()
+        .push(Router::with_path("refresh").post(refresh_access_token))
+        .push(
+            Router::with_path("login")
+                .get(login_types)
+                .post(login)
+                .push(
+                    Router::with_path("sso/redirect")
+                        .get(redirect)
+                        .push(Router::with_path("{idp_id}").get(provider_url)),
+                )
+                .push(Router::with_path("sso/callback").get(delegated_sso_callback)),
+        )
 }
 pub fn authed_router() -> Router {
     Router::new()
         .push(
             Router::with_path("login").push(Router::with_path("get_token").post(get_access_token)),
         )
-        .push(Router::with_path("refresh").post(refresh_access_token))
         .push(
             Router::with_path("logout")
                 .post(logout)
@@ -343,6 +344,7 @@ async fn login(
         .await?;
         (Some(refresh_token), Some(refresh_token_id))
     } else {
+        data::user::device::delete_refresh_tokens(&user_id, &device_id).await?;
         (None, None)
     };
 
@@ -361,6 +363,36 @@ async fn login(
         .await?;
     }
 
+    let access_expiry = if refresh_token.is_some() {
+        let expiry = UnixMillis(
+            UnixMillis::now()
+                .get()
+                .saturating_add(config::get().access_token_ttl)
+                .min(
+                    UnixMillis::now()
+                        .get()
+                        .saturating_add(config::get().session_ttl),
+                ),
+        );
+        diesel::update(
+            user_access_tokens::table
+                .filter(user_access_tokens::user_id.eq(&user_id))
+                .filter(user_access_tokens::device_id.eq(&device_id)),
+        )
+        .set((
+            user_access_tokens::expires_at.eq(Some(expiry)),
+            user_access_tokens::refresh_token_id.eq(refresh_token_id),
+        ))
+        .execute(&mut data::db())
+        .await?;
+        data::user::invalidate_user(&user_id);
+        Some(Duration::from_millis(
+            expiry.get().saturating_sub(UnixMillis::now().get()),
+        ))
+    } else {
+        None
+    };
+
     tracing::info!("{} logged in", user_id);
 
     json_ok(LoginResBody {
@@ -369,7 +401,7 @@ async fn login(
         device_id,
         well_known: None,
         refresh_token,
-        expires_in: None,
+        expires_in: access_expiry,
     })
 }
 
@@ -1132,43 +1164,91 @@ async fn logout_all(_aa: AuthArgs, depot: &mut Depot) -> EmptyResult {
 
 #[endpoint]
 async fn refresh_access_token(
-    _aa: AuthArgs,
     body: JsonBody<RefreshTokenReqBody>,
-    depot: &mut Depot,
+    req: &mut Request,
 ) -> JsonResult<RefreshTokenResBody> {
-    let authed = depot.authed_info()?;
-    let user_id = authed.user_id();
-    let device_id = authed.require_device_id()?;
-    crate::user::valid_refresh_token(user_id, device_id, &body.refresh_token).await?;
-
+    hoops::check_login_rate(req)?;
+    let now = UnixMillis::now().get();
     let access_token = utils::random_string(TOKEN_LENGTH);
     let refresh_token = utils::random_string(TOKEN_LENGTH);
-    let expires_at = UnixMillis::now().get() + crate::config::get().refresh_token_ttl;
-    let ultimate_session_expires_at = UnixMillis::now().get() + crate::config::get().session_ttl;
-    let refresh_token_id = data::user::device::set_refresh_token(
-        user_id,
-        device_id,
-        &refresh_token,
-        expires_at,
-        ultimate_session_expires_at,
-    )
-    .await?;
-    if data::user::device::is_device_exists(user_id, device_id).await? {
-        data::user::device::set_access_token(
-            user_id,
-            device_id,
-            &access_token,
-            Some(refresh_token_id),
-        )
-        .await?;
-    } else {
-        return Err(MatrixError::not_found("Device not found.").into());
-    }
+    let (user_id, expires_at) =
+        rotate_refresh_token(&body.refresh_token, &access_token, &refresh_token, now).await?;
+    data::user::invalidate_user(&user_id);
     json_ok(RefreshTokenResBody {
         access_token,
         refresh_token: Some(refresh_token),
-        expires_in_ms: Some(Duration::from_millis(expires_at - UnixMillis::now().get())),
+        expires_in_ms: Some(Duration::from_millis(expires_at.saturating_sub(now))),
     })
+}
+
+// Lock the credential and its device before rotating both rows in one transaction.
+// Competing refreshes consume the old token once; no access token is required.
+pub(crate) async fn rotate_refresh_token(
+    old: &str,
+    access: &str,
+    refresh: &str,
+    now: u64,
+) -> AppResult<(OwnedUserId, u64)> {
+    use diesel::prelude::*;
+    use horme::OptionalExtension as _;
+    data::connect()
+        .transaction::<_, AppError, _>(async |conn| {
+            let row = user_refresh_tokens::table
+                .filter(user_refresh_tokens::token.eq(old))
+                .for_update()
+                .first::<data::user::DbRefreshToken>(conn)
+                .await
+                .optional()?
+                .ok_or_else(|| MatrixError::unknown_token("Invalid refresh token", false))?;
+            let now = now.max(UnixMillis::now().get());
+            if row.expires_at <= now as i64 || row.ultimate_session_expires_at <= now as i64 {
+                return Err(MatrixError::unknown_token("Refresh session expired", false).into());
+            }
+            let user = users::table
+                .find(&row.user_id)
+                .for_update()
+                .first::<DbUser>(conn)
+                .await?;
+            user::ensure_account_usable(&user)?;
+            user_devices::table
+                .filter(user_devices::user_id.eq(&row.user_id))
+                .filter(user_devices::device_id.eq(&row.device_id))
+                .for_update()
+                .first::<DbUserDevice>(conn)
+                .await?;
+            let expires = now
+                .saturating_add(config::get().access_token_ttl)
+                .min(row.ultimate_session_expires_at as u64);
+            let refresh_expires = now
+                .saturating_add(config::get().refresh_token_ttl)
+                .min(row.ultimate_session_expires_at as u64);
+            // Invalidate before commit as well, preventing stale cache repopulation.
+            data::user::invalidate_user(&row.user_id);
+            diesel::update(user_refresh_tokens::table.find(row.id))
+                .set((
+                    user_refresh_tokens::token.eq(refresh),
+                    user_refresh_tokens::expires_at.eq(refresh_expires as i64),
+                ))
+                .execute(conn)
+                .await?;
+            let changed = diesel::update(
+                user_access_tokens::table
+                    .filter(user_access_tokens::user_id.eq(&row.user_id))
+                    .filter(user_access_tokens::device_id.eq(&row.device_id)),
+            )
+            .set((
+                user_access_tokens::token.eq(access),
+                user_access_tokens::refresh_token_id.eq(Some(row.id)),
+                user_access_tokens::expires_at.eq(Some(UnixMillis(expires))),
+            ))
+            .execute(conn)
+            .await?;
+            if changed != 1 {
+                return Err(MatrixError::unknown_token("Session has been revoked", false).into());
+            }
+            Ok((row.user_id, expires))
+        })
+        .await
 }
 
 /// Extract redirectUrl from query string (Element sends camelCase `redirectUrl`).
