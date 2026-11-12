@@ -62,6 +62,42 @@ fn includes_global_event(
             .is_none_or(|senders| senders.iter().any(matches_sender))
 }
 
+fn includes_room_section_event(
+    filter: &RoomEventFilter,
+    room_id: &RoomId,
+    event: &serde_json::Value,
+) -> bool {
+    let ty = event["type"].as_str().unwrap_or_default();
+    let sender = event["sender"].as_str();
+    let matches_sender = |user: &OwnedUserId| sender == Some(user.as_str());
+    !filter.not_rooms.iter().any(|room| room == room_id)
+        && filter
+            .rooms
+            .as_ref()
+            .is_none_or(|rooms| rooms.iter().any(|room| room == room_id))
+        && !filter
+            .not_types
+            .iter()
+            .any(|pattern| event_type_matches(pattern, ty))
+        && filter
+            .types
+            .as_ref()
+            .is_none_or(|types| types.iter().any(|pattern| event_type_matches(pattern, ty)))
+        && !filter.not_senders.iter().any(matches_sender)
+        && filter
+            .senders
+            .as_ref()
+            .is_none_or(|senders| senders.iter().any(matches_sender))
+        && filter.url_filter.as_ref().is_none_or(|url_filter| {
+            matches!(
+                url_filter,
+                crate::core::client::filter::UrlFilter::EventsWithUrl
+            ) == event["content"]
+                .as_object()
+                .is_some_and(|content| content.contains_key("url"))
+        })
+}
+
 #[tracing::instrument(skip_all)]
 pub async fn sync_events(
     sender_id: &UserId,
@@ -89,7 +125,7 @@ pub async fn sync_events(
         let max_since_sn = curr_sn + 1;
         #[cfg(not(feature = "unstable-msc4494"))]
         let max_since_sn = curr_sn;
-        if since_tk.stream_ordering() > max_since_sn {
+        if since_tk.stream_ordering() > max_since_sn && !args.full_state {
             let mut response = SyncEventsResBody::new(since_str.to_owned());
             // Key uploads and claims need not allocate a stream position. Even
             // an idle incremental sync must report their current usage state.
@@ -245,7 +281,7 @@ pub async fn sync_events(
         {
             continue;
         }
-        let left_room = match load_left_room(
+        let left_room = load_left_room(
             sender_id,
             device_id,
             room_id,
@@ -258,14 +294,7 @@ pub async fn sync_events(
             &mut joined_users,
             &mut left_users,
         )
-        .await
-        {
-            Ok(left_room) => left_room,
-            Err(e) => {
-                tracing::error!(error = ?e, "load left room failed");
-                continue;
-            }
-        };
+        .await?;
         left_rooms.insert(room_id.to_owned(), left_room);
     }
 
@@ -468,7 +497,7 @@ async fn load_joined_room(
     {
         return Err(AppError::internal("injected joined room database failure"));
     }
-    if since_tk.map(|s| s.event_sn()) > Some(data::curr_sn().await?) {
+    if !full_state && since_tk.map(|s| s.event_sn()) > Some(data::curr_sn().await?) {
         return Ok((JoinedRoom::default(), None));
     }
     let deliver_room = includes_room(&filter.room, room_id);
@@ -600,7 +629,8 @@ async fn load_joined_room(
         since_tk.event_sn(),
     )?;
     let (heroes, joined_member_count, invited_member_count, joined_since_last_sync, state_events) =
-        if timeline.events.is_empty()
+        if !full_state
+            && timeline.events.is_empty()
             && (since_frame_id == Some(current_frame_id) || since_frame_id.is_none())
         {
             // No state changes
@@ -624,12 +654,20 @@ async fn load_joined_room(
             };
 
             let joined_since_last_sync = joined_since_incremental;
-            if initial_sync || since_tk.event_sn() == 0 || joined_since_last_sync {
+            if initial_sync
+                || (full_state && since_frame_id.is_none())
+                || since_tk.event_sn() == 0
+                || joined_since_last_sync
+            {
                 // Probably since = 0, we will do an initial sync
                 let (joined_member_count, invited_member_count, heroes) =
                     calculate_counts().await?;
-                let current_state_ids =
-                    state::get_full_state_ids(since_frame_id.unwrap_or(current_frame_id)).await?;
+                let current_state_ids = state::get_full_state_ids(if full_state {
+                    current_frame_id
+                } else {
+                    since_frame_id.unwrap_or(current_frame_id)
+                })
+                .await?;
                 let mut state_events = Vec::new();
                 let mut lazy_loaded = HashSet::new();
 
@@ -720,7 +758,7 @@ async fn load_joined_room(
                 let mut state_events = Vec::new();
                 let mut lazy_loaded = HashSet::new();
 
-                if since_frame_id != current_frame_id {
+                if full_state || since_frame_id != current_frame_id {
                     let current_state_ids = state::get_full_state_ids(current_frame_id).await?;
                     let since_state_ids = state::get_full_state_ids(since_frame_id).await?;
 
@@ -860,11 +898,23 @@ async fn load_joined_room(
         );
     }
 
+    edus.retain(|event| {
+        serde_json::from_str(event.json().get())
+            .is_ok_and(|event| includes_room_section_event(&filter.room.ephemeral, room_id, &event))
+    });
+    edus.truncate(filter.room.ephemeral.limit.unwrap_or(usize::MAX));
+
     let account_events =
         data::user::data_changes(Some(room_id), sender_id, since_tk.event_sn(), None)
             .await?
             .into_iter()
             .filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Room))
+            .filter(|event| {
+                serde_json::from_str(event.json().get()).is_ok_and(|event| {
+                    includes_room_section_event(&filter.room.account_data, room_id, &event)
+                })
+            })
+            .take(filter.room.account_data.limit.unwrap_or(usize::MAX))
             .collect();
     let notify_summary = room::user::notify_summary(sender_id, room_id).await?;
     let mut notification_count = None;
@@ -1099,9 +1149,7 @@ async fn load_left_room(
         });
     }
 
-    let Ok(curr_frame_id) = room::get_frame_id(room_id, None).await else {
-        return Ok(LeftRoom::default());
-    };
+    let curr_frame_id = room::get_frame_id(room_id, None).await?;
     let left_event_id = state::get_state_event_id(
         curr_frame_id,
         &StateEventType::RoomMember,
@@ -1130,9 +1178,7 @@ async fn load_left_room(
     }
 
     let mut state_events = Vec::new();
-    let mut left_state_ids = state::get_full_state_ids(left_frame_id)
-        .await
-        .unwrap_or_default();
+    let mut left_state_ids = state::get_full_state_ids(left_frame_id).await?;
     let leave_state_key_id =
         state::ensure_field_id(&StateEventType::RoomMember, sender_id.as_str()).await?;
     left_state_ids.insert(leave_state_key_id, left_event_id.clone());
@@ -1861,3 +1907,6 @@ mod joined_room_failure_tests {
         assert_eq!(retry.rooms.join.len(), 2);
     }
 }
+
+#[cfg(test)]
+mod protocol_contract_tests;

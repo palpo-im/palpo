@@ -975,7 +975,9 @@ impl PduEvent {
     }
 
     pub fn can_pass_filter(&self, filter: &RoomEventFilter) -> bool {
-        if filter.not_types.contains(&self.event_ty.to_string()) {
+        if filter.not_types.iter().any(|pattern| {
+            crate::event::search::event_type_matches(pattern, self.event_ty.as_ref())
+        }) {
             return false;
         }
         if filter.not_rooms.contains(&self.room_id) {
@@ -996,7 +998,9 @@ impl PduEvent {
             return false;
         }
         if let Some(types) = &filter.types
-            && !types.contains(&self.event_ty.to_string())
+            && !types.iter().any(|pattern| {
+                crate::event::search::event_type_matches(pattern, self.event_ty.as_ref())
+            })
         {
             return false;
         }

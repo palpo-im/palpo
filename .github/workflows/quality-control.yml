@@ -211,6 +211,7 @@ jobs:
             routing::capability_contract_tests::review_threepid_capabilities_and_rejections_match_routes
             routing::capability_contract_tests::review_thirdparty_queries_track_live_appservice_disable
             routing::thirdparty_peer_tests::review_thirdparty_queries_isolate_failed_peers_and_preserve_instances
+            sync_v3::protocol_contract_tests::review_protocol_openid_full_state_filters_and_leave_retry
             routing::federation::tests::review_onbind_respects_disabled_federation
             media::preview::resource_tests::review_preview_requests_reclaim_failed_urls_and_deduplicate
           )

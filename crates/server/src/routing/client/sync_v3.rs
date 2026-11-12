@@ -70,13 +70,14 @@ pub(super) async fn sync_events_v3(
         && body.device_lists.is_empty()
         && body.to_device.is_empty()
     {
-        // Hang a few seconds so requests are not spammed
-        // Stop hanging if new info arrives
-        let default = Duration::from_secs(30);
-        let duration = std::cmp::min(args.timeout.unwrap_or(default), default);
+        // Clients opt in to long polling; omitted timeout means an immediate response.
+        let max_wait = Duration::from_secs(30);
+        let duration = std::cmp::min(args.timeout.unwrap_or(Duration::ZERO), max_wait);
         // Setup watchers, so if there's no response, we can wait for them
-        let watcher = crate::watcher::watch(sender_id, device_id, false, None);
-        _ = tokio::time::timeout(duration, watcher).await;
+        if !duration.is_zero() {
+            let watcher = crate::watcher::watch(sender_id, device_id, false, None);
+            _ = tokio::time::timeout(duration, watcher).await;
+        }
 
         // Retry returning data
         body = crate::sync_v3::sync_events(sender_id, device_id, &args).await?;

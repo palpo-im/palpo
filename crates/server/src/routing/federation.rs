@@ -26,11 +26,11 @@ pub fn router() -> Router {
     Router::with_path("federation")
         .hoop(check_federation_enabled)
         .oapi_tag("federation")
-        // Discovery and identity-server bind callbacks do not use server authentication.
+        // Discovery, OpenID tokens and identity-server bind callbacks do not use server authentication.
         .push(Router::with_path("v1/version").get(version))
-        .push(Router::with_path("v1").push(threepid::router()))
+        .push(Router::with_path("v1").push(threepid::router()).push(openid::router()))
         // Historical non-standard v2 alias: the same explicit unsupported response.
-        .push(Router::with_path("v2").push(threepid::router()))
+        .push(Router::with_path("v2").push(threepid::router()).push(openid::router()))
         .push(authenticated_router())
 }
 
@@ -42,7 +42,6 @@ fn authenticated_router() -> Router {
                 .push(backfill::router())
                 .push(event::router())
                 .push(membership::router_v2())
-                .push(openid::router())
                 .push(query::router())
                 .push(room::router())
                 .push(space::router())
@@ -54,7 +53,6 @@ fn authenticated_router() -> Router {
                 .push(backfill::router())
                 .push(event::router())
                 .push(membership::router_v1())
-                .push(openid::router())
                 .push(query::router())
                 .push(room::router())
                 .push(space::router())

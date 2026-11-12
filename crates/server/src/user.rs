@@ -260,13 +260,13 @@ pub async fn remove_all_devices(user_id: &UserId) -> AppResult<()> {
 pub async fn find_from_openid_token(token: &str) -> AppResult<OwnedUserId> {
     let Some((user_id, expires_at)) = data::user::openid_token::get_openid_token(token).await?
     else {
-        return Err(MatrixError::unauthorized("OpenID token is unrecognised").into());
+        return Err(MatrixError::unknown_token("OpenID token is unrecognised", false).into());
     };
     if expires_at < UnixMillis::now() {
         tracing::warn!("OpenID token is expired, removing");
         data::user::openid_token::delete_openid_token(token).await?;
 
-        return Err(MatrixError::unauthorized("OpenID token is expired").into());
+        return Err(MatrixError::unknown_token("OpenID token is expired", false).into());
     }
 
     Ok(user_id)
