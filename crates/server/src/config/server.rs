@@ -1510,6 +1510,10 @@ fn default_rc_user_directory() -> RateLimitConfig {
     }
 }
 
+fn default_access_token_ttl() -> u64 {
+    60_000
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1536,8 +1540,4 @@ mod tests {
         assert!(denylist.contains(&"::1/128".to_owned()));
         assert!(denylist.contains(&"fc00::/7".to_owned()));
     }
-}
-
-fn default_access_token_ttl() -> u64 {
-    60_000
 }
