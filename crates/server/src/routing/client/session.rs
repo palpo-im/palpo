@@ -1191,7 +1191,6 @@ pub(crate) async fn rotate_refresh_token(
     refresh: &str,
     now: u64,
 ) -> AppResult<(OwnedUserId, u64)> {
-    use diesel::prelude::*;
     use horme::OptionalExtension as _;
     data::connect()
         .transaction::<_, AppError, _>(async |conn| {

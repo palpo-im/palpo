@@ -14,7 +14,7 @@ use super::{Dimension, FileMeta};
 use crate::core::federation::media::{ContentReqArgs, FileOrLocation, try_from_multipart_mixed};
 use crate::core::http_headers::ContentDisposition;
 use crate::core::identifiers::*;
-use crate::core::{Mxc, ServerName, UserId};
+use crate::core::{MatrixError, Mxc, ServerName, UserId};
 use crate::data::schema::*;
 use crate::exts::*;
 use crate::utils::content_disposition::make_content_disposition;
