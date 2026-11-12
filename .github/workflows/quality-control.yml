@@ -183,6 +183,10 @@ jobs:
           # Configuration and pools are process-global. Give each exact case
           # its own process and empty database in both supported feature modes.
           cases=(
+            sync_v3::resource_review_tests::review_filtered_room_skips_payloads_and_keeps_independent_membership
+            concurrency_review_tests::review_purge_preserves_tips_and_resumes_committed_batches
+            concurrency_review_tests::review_receipt_latest_projection_retains_log_and_threads
+            watcher::review_tests::review_watch_receipts_presence_and_pre_response_baseline
             routing::client::room::state::state_snapshot_tests::review_state_gets_share_departure_snapshot_and_rejoin_boundary
             routing::client::media::upload_tests::http_reserved_media_enforces_owner_and_safe_download_headers
             media::upload::tests::review_reserved_upload_serializes_and_recovers_storage_and_db_failures

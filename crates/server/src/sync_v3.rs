@@ -504,6 +504,38 @@ async fn load_joined_room(
         Some(current_frame_id)
     };
 
+    if !deliver_room {
+        // Filtered rooms still contribute independent presence/device membership
+        // changes, but must not fetch timelines, backfill, receipts or account data.
+        let current_join = joined_period_at(current_frame_id, sender_id).await?;
+        let previous_join = if let Some(frame) = since_frame_id {
+            joined_period_at(frame, sender_id).await?
+        } else {
+            None
+        };
+        if since_tk.is_none() || current_join != previous_join {
+            joined_users.extend(joined_users_at_frame(current_frame_id).await?);
+        } else if let Some(previous) = since_frame_id {
+            if previous != current_frame_id {
+                let before = state::get_full_state_ids(previous).await?;
+                for (field, event) in state::get_full_state_ids(current_frame_id).await? {
+                    if before.get(&field) != Some(&event)
+                        && state::get_field(field).await?.event_ty == StateEventType::RoomMember
+                    {
+                        collect_membership_change(
+                            &timeline::get_pdu(&event).await?,
+                            sender_id,
+                            joined_users,
+                            left_users,
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+        return Ok((JoinedRoom::default(), None));
+    }
+
     let mut timeline = load_timeline(
         sender_id,
         room_id,
@@ -701,7 +733,7 @@ async fn load_joined_room(
 
                 // && encrypted_room || new_encrypted_room {
                 // If the user is in a new encrypted room, give them all joined users
-                *joined_users = joined_users_at_frame(current_frame_id).await?;
+                joined_users.extend(joined_users_at_frame(current_frame_id).await?);
                 // .into_iter()
                 // .filter(|user_id| {
                 //     // Don't send key updates from the sender to the sender
@@ -847,7 +879,9 @@ async fn load_joined_room(
     }
 
     let mut edus: Vec<RawJson<AnySyncEphemeralRoomEvent>> = Vec::new();
-    for (_, content) in data::room::receipt::read_receipts(room_id, since_tk.event_sn()).await? {
+    for (_, content) in
+        data::room::receipt::read_receipts(room_id, since_tk.event_sn(), Some(sender_id)).await?
+    {
         let receipt = SyncReceiptEvent { content };
         edus.push(RawJson::new(&receipt)?.cast());
     }
@@ -1861,3 +1895,7 @@ mod joined_room_failure_tests {
         assert_eq!(retry.rooms.join.len(), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "sync_v3/resource_review_tests.rs"]
+mod resource_review_tests;

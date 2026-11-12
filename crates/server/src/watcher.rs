@@ -7,9 +7,13 @@ use crate::core::Seqnum;
 use crate::core::identifiers::*;
 
 #[derive(Debug, diesel::QueryableByName)]
-struct WatchSnapshot {
+pub(crate) struct WatchSnapshot {
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     typing_sn: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    receipt_sn: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    presence_sn: i64,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     inbox_id: i64,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
@@ -27,6 +31,8 @@ struct WatchSnapshot {
 impl WatchSnapshot {
     fn has_updates_since(&self, previous: &Self) -> bool {
         self.typing_sn > previous.typing_sn
+            || self.receipt_sn > previous.receipt_sn
+            || self.presence_sn > previous.presence_sn
             || self.inbox_id > previous.inbox_id
             || self.key_change_id > previous.key_change_id
             || self.membership_id > previous.membership_id
@@ -36,7 +42,7 @@ impl WatchSnapshot {
     }
 }
 
-async fn load_watch_snapshot(
+pub(crate) async fn load_watch_snapshot(
     user_id: &UserId,
     device_id: &DeviceId,
     profiles: bool,
@@ -49,8 +55,16 @@ async fn load_watch_snapshot(
                 SELECT DISTINCT ON (room_id) room_id, membership FROM room_users
                 WHERE user_id = $1 ORDER BY room_id, id DESC
             ) AS memberships WHERE membership = 'join'
+        ), shared_users AS (
+            SELECT user_id FROM (
+                SELECT DISTINCT ON (user_id, room_id) user_id, membership
+                FROM room_users WHERE room_id IN (SELECT room_id FROM joined_rooms)
+                ORDER BY user_id, room_id, id DESC
+            ) AS members WHERE membership = 'join'
         )
         SELECT
+          COALESCE((SELECT MAX(sn) FROM event_receipts WHERE room_id IN (SELECT room_id FROM joined_rooms) AND (ty <> 'm.read.private' OR user_id = $1)), 0) AS receipt_sn,
+          COALESCE((SELECT MAX(occur_sn) FROM user_presences WHERE user_id = $1 OR user_id IN (SELECT user_id FROM shared_users)), 0) AS presence_sn,
           COALESCE((SELECT MAX(occur_sn) FROM room_typings WHERE room_id IN (SELECT room_id FROM joined_rooms)), 0) AS typing_sn,
           COALESCE((SELECT MAX(id) FROM device_inboxes WHERE user_id = $1 AND device_id = $2), 0) AS inbox_id,
           COALESCE((SELECT MAX(id) FROM e2e_key_changes WHERE user_id = $1), 0) AS key_change_id,
@@ -91,13 +105,15 @@ fn profile_change_is_ready(
     profile_updates && profile_after_sn.is_some_and(|after_sn| latest_change_sn >= after_sn)
 }
 
-pub async fn watch(
+/// The baseline must be captured before reading the response, so a write during
+/// response construction cannot disappear into a newly registered watch.
+pub(crate) async fn watch_from(
     user_id: &UserId,
     device_id: &DeviceId,
     profile_updates: bool,
     profile_after_sn: Option<Seqnum>,
+    baseline: WatchSnapshot,
 ) -> AppResult<()> {
-    let baseline = load_watch_snapshot(user_id, device_id, profile_updates).await?;
     if profile_change_is_ready(profile_updates, profile_after_sn, baseline.profile_sn) {
         return Ok(());
     }
@@ -105,10 +121,10 @@ pub async fn watch(
         _ = crate::ROTATE.watch() => Ok(()),
         result = async {
             for _ in 0..10 {
-                tokio::time::sleep(Duration::from_secs(3)).await;
                 if load_watch_snapshot(user_id, device_id, profile_updates).await?.has_updates_since(&baseline) {
                     return Ok(());
                 }
+                tokio::time::sleep(Duration::from_secs(3)).await;
             }
             Ok(())
         } => result,
@@ -191,6 +207,50 @@ mod database_tests {
                 .await
                 .unwrap()
                 .has_updates_since(&previous)
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
+    async fn review_watch_receipts_presence_and_pre_response_baseline() {
+        crate::test_database::init();
+        let user: &UserId = "@watch:example.org".try_into().unwrap();
+        let device: &DeviceId = "D".into();
+        diesel::sql_query("INSERT INTO room_users(event_id,event_sn,room_id,user_id,user_server_id,sender_id,membership,created_at) VALUES ('$watch',1,'!watch:example.org','@watch:example.org','example.org','@watch:example.org','join',0),('$peer',2,'!watch:example.org','@peer:example.org','example.org','@peer:example.org','join',0)")
+            .execute(&mut crate::data::db()).await.unwrap();
+        let before = load_watch_snapshot(user, device, false).await.unwrap();
+        // A receipt committed after the response starts and before watch registration.
+        diesel::sql_query("INSERT INTO event_receipts(sn,ty,room_id,user_id,event_id,event_sn,json_data,receipt_at) VALUES (3,'m.read','!watch:example.org','@peer:example.org','$read',2,'{}',0)")
+            .execute(&mut crate::data::db()).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            watch_from(user, device, false, None, before),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let before = load_watch_snapshot(user, device, false).await.unwrap();
+        diesel::sql_query("INSERT INTO user_presences(user_id,occur_sn,updated_at) VALUES ('@peer:example.org',4,4)")
+            .execute(&mut crate::data::db()).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            watch_from(user, device, false, None, before),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let before = load_watch_snapshot(user, device, false).await.unwrap();
+        diesel::sql_query("INSERT INTO user_presences(user_id,occur_sn,updated_at) VALUES ('@stranger:example.org',999,999)")
+            .execute(&mut crate::data::db()).await.unwrap();
+        assert!(
+            !load_watch_snapshot(user, device, false)
+                .await
+                .unwrap()
+                .has_updates_since(&before)
         );
     }
 }
