@@ -737,15 +737,12 @@ pub async fn delete_remote_media(
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
-    use std::sync::{Arc, LazyLock};
 
-    use futures_util::{Stream, StreamExt};
     use salvo::Response;
     use salvo::http::header::{
         CONNECTION, CONTENT_DISPOSITION, CONTENT_TYPE, LOCATION, SET_COOKIE,
     };
     use salvo::http::{HeaderMap, HeaderValue, StatusCode};
-    use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
     use super::apply_legacy_response_headers;
     use crate::core::http_headers::{ContentDisposition, ContentDispositionType};
