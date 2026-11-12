@@ -391,18 +391,57 @@ pub async fn remove_other_devices(
     joined_rooms: &[OwnedRoomId],
     remote_servers: &[OwnedServerName],
 ) -> DataResult<Vec<OwnedDeviceId>> {
+    remove_devices_matching(
+        user_id,
+        Some(keep_device),
+        None,
+        joined_rooms,
+        remote_servers,
+    )
+    .await
+}
+
+/// Revoke an explicit target set atomically, including durable deletion notifications.
+/// Missing devices are idempotent; storage and notification failures are never ignored.
+pub async fn remove_selected_devices(
+    user_id: &UserId,
+    devices: &[OwnedDeviceId],
+    joined_rooms: &[OwnedRoomId],
+    remote_servers: &[OwnedServerName],
+) -> DataResult<Vec<OwnedDeviceId>> {
+    remove_devices_matching(user_id, None, Some(devices), joined_rooms, remote_servers).await
+}
+
+async fn remove_devices_matching(
+    user_id: &UserId,
+    keep_device: Option<&DeviceId>,
+    selected: Option<&[OwnedDeviceId]>,
+    joined_rooms: &[OwnedRoomId],
+    remote_servers: &[OwnedServerName],
+) -> DataResult<Vec<OwnedDeviceId>> {
     super::access_token::invalidate_user(user_id);
     let result = connect()
         .transaction::<_, DataError, _>(async |conn| {
             super::key::lock_key_change_user(conn, user_id).await?;
-            let device_ids = user_devices::table
-                .filter(user_devices::user_id.eq(user_id))
-                .filter(user_devices::device_id.ne(keep_device))
-                .order_by(user_devices::device_id.asc())
-                .select(user_devices::device_id)
-                .for_update()
-                .load::<OwnedDeviceId>(conn)
-                .await?;
+            let device_ids = if let Some(selected) = selected {
+                user_devices::table
+                    .filter(user_devices::user_id.eq(user_id))
+                    .filter(user_devices::device_id.eq_any(selected))
+                    .order_by(user_devices::device_id.asc())
+                    .select(user_devices::device_id)
+                    .for_update()
+                    .load::<OwnedDeviceId>(conn)
+                    .await?
+            } else {
+                user_devices::table
+                    .filter(user_devices::user_id.eq(user_id))
+                    .filter(user_devices::device_id.ne(keep_device.expect("all-other selection")))
+                    .order_by(user_devices::device_id.asc())
+                    .select(user_devices::device_id)
+                    .for_update()
+                    .load::<OwnedDeviceId>(conn)
+                    .await?
+            };
             for device_id in &device_ids {
                 remove_device_on_connection(conn, user_id, device_id).await?;
             }

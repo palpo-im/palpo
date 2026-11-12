@@ -97,3 +97,7 @@ pub fn router() -> Router {
 async fn home() -> &'static str {
     "Palpo Admin API"
 }
+
+#[cfg(test)]
+#[path = "admin_contract_tests.rs"]
+mod contract_tests;

@@ -9,6 +9,11 @@ env:
   SYNAPSE_REVISION: 217e4c0f48e01db000127ed9bfb5251eefc51a2c
 
 on:
+  workflow_call:
+    inputs:
+      require_clean_suite:
+        type: boolean
+        default: true
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
