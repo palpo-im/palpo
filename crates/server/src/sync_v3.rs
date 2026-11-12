@@ -515,21 +515,21 @@ async fn load_joined_room(
         };
         if since_tk.is_none() || current_join != previous_join {
             joined_users.extend(joined_users_at_frame(current_frame_id).await?);
-        } else if let Some(previous) = since_frame_id {
-            if previous != current_frame_id {
-                let before = state::get_full_state_ids(previous).await?;
-                for (field, event) in state::get_full_state_ids(current_frame_id).await? {
-                    if before.get(&field) != Some(&event)
-                        && state::get_field(field).await?.event_ty == StateEventType::RoomMember
-                    {
-                        collect_membership_change(
-                            &timeline::get_pdu(&event).await?,
-                            sender_id,
-                            joined_users,
-                            left_users,
-                        )
-                        .await?;
-                    }
+        } else if let Some(previous) = since_frame_id
+            && previous != current_frame_id
+        {
+            let before = state::get_full_state_ids(previous).await?;
+            for (field, event) in state::get_full_state_ids(current_frame_id).await? {
+                if before.get(&field) != Some(&event)
+                    && state::get_field(field).await?.event_ty == StateEventType::RoomMember
+                {
+                    collect_membership_change(
+                        &timeline::get_pdu(&event).await?,
+                        sender_id,
+                        joined_users,
+                        left_users,
+                    )
+                    .await?;
                 }
             }
         }
