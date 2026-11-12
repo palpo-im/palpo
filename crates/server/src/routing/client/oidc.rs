@@ -1555,9 +1555,24 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
+    #[test]
     #[ignore = "requires an empty dedicated PostgreSQL database"]
-    async fn review_security_receipts_sessions_and_oidc_bindings() {
+    fn review_security_receipts_sessions_and_oidc_bindings() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(run_security_receipts_sessions_and_oidc_bindings())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn run_security_receipts_sessions_and_oidc_bindings() {
         use diesel::prelude::*;
         use horme::RunQueryDsl;
         use salvo::test::{ResponseExt, TestClient};
@@ -1662,6 +1677,115 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+
+        // Exercise the actual callers: two users share a real room, and Alice's
+        // second device must receive the receipt that Bob must never receive.
+        for (user, device, token) in [
+            (&a.id, "HTTP_A", "security-http-a"),
+            (&a.id, "HTTP_A_OTHER", "security-http-a-other"),
+            (&b.id, "HTTP_B", "security-http-b"),
+        ] {
+            crate::data::user::device::create_device(
+                user,
+                &OwnedDeviceId::from(device),
+                token,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let http = Service::new(crate::routing::root());
+        let created = security_http_request(
+            TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+                .add_header("Authorization", "Bearer security-http-a", true)
+                .json(&serde_json::json!({"room_version":"11", "preset":"public_chat"})),
+            &http,
+        )
+        .await;
+        let room = created["room_id"].as_str().unwrap();
+        security_http_request(
+            TestClient::post(format!("http://localhost/_matrix/client/v3/join/{room}"))
+                .add_header("Authorization", "Bearer security-http-b", true)
+                .json(&serde_json::json!({})),
+            &http,
+        )
+        .await;
+        let message = security_http_request(TestClient::put(format!("http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/security-receipt"))
+            .add_header("Authorization", "Bearer security-http-a", true)
+            .json(&serde_json::json!({"msgtype":"m.text", "body":"receipt target"})), &http).await;
+        let target = message["event_id"].as_str().unwrap();
+        let sliding_url =
+            "http://localhost/_matrix/client/unstable/org.matrix.simplified_msc3575/sync";
+        let sliding_body = serde_json::json!({
+            "conn_id": "security",
+            "room_subscriptions": { (room): {"required_state":[], "timeline_limit":1}},
+            "extensions":{"receipts":{"enabled":true}}
+        });
+        let mut baselines = Vec::new();
+        for token in ["security-http-b", "security-http-a-other"] {
+            let v3 =
+                security_http_request(
+                    TestClient::get("http://localhost/_matrix/client/v3/sync?timeout=0")
+                        .add_header("Authorization", format!("Bearer {token}"), true),
+                    &http,
+                )
+                .await;
+            let v5 = security_http_request(
+                TestClient::post(format!("{sliding_url}?timeout=0"))
+                    .add_header("Authorization", format!("Bearer {token}"), true)
+                    .json(&sliding_body),
+                &http,
+            )
+            .await;
+            baselines.push((
+                token,
+                v3["next_batch"].as_str().unwrap().to_owned(),
+                v5["pos"].as_str().unwrap().to_owned(),
+            ));
+        }
+        security_http_request(
+            TestClient::post(format!(
+                "http://localhost/_matrix/client/v3/rooms/{room}/receipt/m.read.private/{target}"
+            ))
+            .add_header("Authorization", "Bearer security-http-a", true)
+            .json(&serde_json::json!({})),
+            &http,
+        )
+        .await;
+        for (token, since, pos) in baselines {
+            let own = token == "security-http-a-other";
+            let v3 = security_http_request(
+                TestClient::get(format!(
+                    "http://localhost/_matrix/client/v3/sync?timeout=0&since={since}"
+                ))
+                .add_header("Authorization", format!("Bearer {token}"), true),
+                &http,
+            )
+            .await;
+            let events = v3["rooms"]["join"][room]["ephemeral"]["events"].as_array();
+            let has_private = events.is_some_and(|events| {
+                events.iter().any(|event| {
+                    event["type"] == "m.receipt"
+                        && event["content"][target]["m.read.private"]
+                            .get(a.id.as_str())
+                            .is_some()
+                })
+            });
+            assert_eq!(has_private, own, "v3 receipt visibility for {token}: {v3}");
+            let v5 = security_http_request(
+                TestClient::post(format!("{sliding_url}?timeout=0&pos={pos}"))
+                    .add_header("Authorization", format!("Bearer {token}"), true)
+                    .json(&sliding_body),
+                &http,
+            )
+            .await;
+            let has_private =
+                v5["extensions"]["receipts"]["rooms"][room]["content"][target]["m.read.private"]
+                    .get(a.id.as_str())
+                    .is_some();
+            assert_eq!(has_private, own, "v5 receipt visibility for {token}: {v5}");
+        }
 
         let device = OwnedDeviceId::from("SECURITY");
         crate::data::user::device::create_device(&a.id, &device, "initial", None, None)
@@ -1817,6 +1941,20 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    async fn security_http_request(
+        builder: salvo::test::RequestBuilder,
+        service: &Service,
+    ) -> serde_json::Value {
+        use salvo::test::ResponseExt;
+        let router = service.router();
+        let mut response = tokio::spawn(async move { builder.send(router).await })
+            .await
+            .unwrap();
+        let body = response.take_json::<serde_json::Value>().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{body}");
+        body
     }
 
     fn provider_with_mapping(mapping: &[(&str, &str)]) -> OidcProviderConfig {
