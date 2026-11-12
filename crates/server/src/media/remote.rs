@@ -176,7 +176,12 @@ pub async fn fetch_remote_content(
     res.add_header(CONTENT_DISPOSITION, content_disposition.to_string(), true)?;
     res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
     res.status_code(StatusCode::OK);
-    res.body = ResBody::Once(content.file.into());
+    let file = bytes::Bytes::from(content.file);
+    res.stream(budgeted_stream(
+        futures_util::stream::once(async move { Ok::<_, std::io::Error>(file) }),
+        permit,
+        max,
+    ));
 
     Ok(())
 }

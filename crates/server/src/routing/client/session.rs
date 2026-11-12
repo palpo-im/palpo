@@ -1177,7 +1177,9 @@ async fn refresh_access_token(
     json_ok(RefreshTokenResBody {
         access_token,
         refresh_token: Some(refresh_token),
-        expires_in_ms: Some(Duration::from_millis(expires_at.saturating_sub(now))),
+        expires_in_ms: Some(Duration::from_millis(
+            expires_at.saturating_sub(UnixMillis::now().get()),
+        )),
     })
 }
 
@@ -1208,14 +1210,18 @@ pub(crate) async fn rotate_refresh_token(
                 .find(&row.user_id)
                 .for_update()
                 .first::<DbUser>(conn)
-                .await?;
+                .await
+                .optional()?
+                .ok_or_else(|| MatrixError::unknown_token("Session has been revoked", false))?;
             user::ensure_account_usable(&user)?;
             user_devices::table
                 .filter(user_devices::user_id.eq(&row.user_id))
                 .filter(user_devices::device_id.eq(&row.device_id))
                 .for_update()
                 .first::<DbUserDevice>(conn)
-                .await?;
+                .await
+                .optional()?
+                .ok_or_else(|| MatrixError::unknown_token("Session has been revoked", false))?;
             let expires = now
                 .saturating_add(config::get().access_token_ttl)
                 .min(row.ultimate_session_expires_at as u64);

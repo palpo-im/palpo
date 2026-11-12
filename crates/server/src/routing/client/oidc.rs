@@ -1574,6 +1574,32 @@ mod tests {
             ..Default::default()
         };
         let candidate = "@alice_ab:security.example";
+        let native_id = crate::core::UserId::parse("@native:security.example").unwrap();
+        crate::data::user::create_user(&crate::data::user::NewDbUser {
+            id: native_id.clone(),
+            ty: None,
+            is_admin: false,
+            is_guest: false,
+            is_local: true,
+            localpart: "native".into(),
+            server_name: config::server_name().to_owned(),
+            appservice_id: None,
+            created_at: UnixMillis::now(),
+        })
+        .await
+        .unwrap();
+        let external = create_or_get_user(
+            native_id.as_str(),
+            "External",
+            None,
+            &cfg,
+            "https://one.example",
+            "native-subject",
+        )
+        .await
+        .unwrap();
+        assert_ne!(native_id, external.id);
+
         let a = create_or_get_user(candidate, "Alice", None, &cfg, "https://one.example", "a:b")
             .await
             .unwrap();
@@ -1651,6 +1677,42 @@ mod tests {
         )
         .await
         .unwrap();
+        // A failure between the refresh-row and access-row writes must roll back both.
+        diesel::sql_query("CREATE FUNCTION security_reject_rotation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected rotation failure'; END $$")
+            .execute(&mut crate::data::db()).await.unwrap();
+        diesel::sql_query("CREATE TRIGGER security_reject_rotation BEFORE UPDATE ON user_access_tokens FOR EACH ROW EXECUTE FUNCTION security_reject_rotation()")
+            .execute(&mut crate::data::db()).await.unwrap();
+        assert!(
+            crate::routing::client::session::rotate_refresh_token(
+                "refresh-old",
+                "failed",
+                "failed-refresh",
+                now
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            crate::data::user::authenticate_token("initial", std::time::Duration::ZERO)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            user_refresh_tokens::table
+                .filter(user_refresh_tokens::token.eq("refresh-old"))
+                .first::<crate::data::user::DbRefreshToken>(&mut crate::data::db())
+                .await
+                .is_ok()
+        );
+        diesel::sql_query("DROP TRIGGER security_reject_rotation ON user_access_tokens")
+            .execute(&mut crate::data::db())
+            .await
+            .unwrap();
+        diesel::sql_query("DROP FUNCTION security_reject_rotation()")
+            .execute(&mut crate::data::db())
+            .await
+            .unwrap();
         let service = Service::new(crate::routing::client::session::public_router());
         let mut response = TestClient::post("http://localhost/refresh")
             .json(&serde_json::json!({"refresh_token": "refresh-old"}))
