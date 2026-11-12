@@ -899,7 +899,7 @@ async fn load_joined_room(
     }
 
     edus.retain(|event| {
-        serde_json::from_str(event.json().get())
+        serde_json::from_str(event.as_str())
             .is_ok_and(|event| includes_room_section_event(&filter.room.ephemeral, room_id, &event))
     });
     edus.truncate(filter.room.ephemeral.limit.unwrap_or(usize::MAX));
@@ -910,7 +910,7 @@ async fn load_joined_room(
             .into_iter()
             .filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Room))
             .filter(|event| {
-                serde_json::from_str(event.json().get()).is_ok_and(|event| {
+                serde_json::from_str(event.as_str()).is_ok_and(|event| {
                     includes_room_section_event(&filter.room.account_data, room_id, &event)
                 })
             })
