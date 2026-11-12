@@ -267,9 +267,11 @@ pub async fn sync_events(
     let all_left_rooms = room::user::left_rooms(sender_id, since_tk).await?;
 
     for room_id in all_left_rooms.keys() {
-        let Ok(left_sn) = room::user::left_sn(room_id, sender_id).await else {
-            tracing::warn!("left room {} without a left_sn, skipping", room_id);
-            continue;
+        let left_sn = match room::user::left_sn(room_id, sender_id).await {
+            Ok(left_sn) => left_sn,
+            // A concurrent rejoin may remove this departure from the current membership.
+            Err(error) if error.is_not_found() => continue,
+            Err(error) => return Err(error),
         };
         // Left before last sync
         let Some(left_publication) = timeline::publication::position(room_id, left_sn).await?
@@ -1195,16 +1197,7 @@ async fn load_left_room(
         let DbRoomStateField { state_key, .. } = state::get_field(key).await?;
 
         if *sender_id == state_key {
-            let pdu = match timeline::get_pdu(&event_id).await {
-                Ok(pdu) => pdu,
-                _ => {
-                    warn!(
-                        "pdu in state not found: {} state_key: {}",
-                        event_id, state_key
-                    );
-                    continue;
-                }
-            };
+            let pdu = timeline::get_pdu(&event_id).await?;
 
             if pdu.can_pass_filter(&filter.room.state) {
                 state_events.push(pdu);
