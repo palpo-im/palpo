@@ -1,12 +1,11 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use diesel::prelude::*;
 use horme::{OptionalExtension as _, RunQueryDsl};
 
-use crate::core::events::AnySyncEphemeralRoomEvent;
-use crate::core::events::receipt::{Receipt, ReceiptEventContent, ReceiptType};
+use crate::core::events::receipt::{ReceiptEventContent, ReceiptType};
 use crate::core::identifiers::*;
-use crate::core::serde::{JsonValue, RawJson};
+use crate::core::serde::JsonValue;
 use crate::core::{Seqnum, UnixMillis};
 use crate::room::DbReceipt;
 use crate::schema::*;
@@ -17,53 +16,48 @@ use crate::{DataResult, next_sn};
 pub async fn read_receipts(
     room_id: &RoomId,
     since_sn: Seqnum,
-) -> DataResult<BTreeMap<OwnedUserId, ReceiptEventContent>> {
-    let _list: Vec<(OwnedUserId, Seqnum, RawJson<AnySyncEphemeralRoomEvent>)> = Vec::new();
-    let receipts = event_receipts::table
+    viewer: Option<&UserId>,
+) -> DataResult<Vec<(OwnedUserId, ReceiptEventContent)>> {
+    // Keep the append-only log for federation cursors, but project only each
+    // changed receipt key's latest value in SQL. Do not materialize its history.
+    let thread =
+        diesel::dsl::sql::<diesel::sql_types::Text>("COALESCE(json_data->>'thread_id', '')");
+    let mut rows = event_receipts::table
         .filter(event_receipts::sn.ge(since_sn))
         .filter(event_receipts::room_id.eq(room_id))
-        .order_by(event_receipts::sn.desc())
+        .filter(
+            event_receipts::ty
+                .ne(ReceiptType::ReadPrivate.to_string())
+                .or(event_receipts::user_id.nullable().eq(viewer)),
+        )
+        .distinct_on((event_receipts::user_id, event_receipts::ty, thread.clone()))
+        .order((
+            event_receipts::user_id,
+            event_receipts::ty,
+            thread,
+            event_receipts::sn.desc(),
+        ))
         .load::<DbReceipt>(&mut crate::db())
         .await?;
-    let unthread_receipts = receipts
-        .iter()
-        .filter(|r| r.thread_id.is_none())
-        .map(|r| (r.user_id.clone(), r.event_id.clone()))
-        .collect::<HashSet<_>>();
-
-    let mut grouped: BTreeMap<OwnedUserId, Vec<_>> = BTreeMap::new();
-    for mut receipt in receipts {
-        if receipt.thread_id.is_some()
-            && unthread_receipts.contains(&(receipt.user_id.clone(), receipt.event_id.clone()))
-        {
-            receipt.thread_id = None;
-        }
-        grouped
-            .entry(receipt.user_id.clone())
-            .or_default()
-            .push(receipt);
-    }
-
-    let mut receipts = BTreeMap::new();
-    for (user_id, items) in grouped {
-        let mut event_content: BTreeMap<
-            OwnedEventId,
-            BTreeMap<ReceiptType, BTreeMap<OwnedUserId, Receipt>>,
-        > = BTreeMap::new();
-
-        for item in items {
-            event_content
-                .entry(item.event_id.clone())
-                .or_default()
-                .insert(
-                    ReceiptType::from(item.ty),
-                    BTreeMap::from_iter([(
-                        item.user_id.clone(),
-                        serde_json::from_value(item.json_data).unwrap_or_default(),
-                    )]),
-                );
-        }
-        receipts.insert(user_id.clone(), ReceiptEventContent(event_content));
+    // Consumers which must collapse receipts into a single wire map (MSC3960)
+    // resolve unrepresentable same-target collisions by stream recency, never
+    // by the thread key's alphabetical position in DISTINCT ON ordering.
+    rows.sort_by_key(|row| row.sn);
+    // Separate events preserve different thread receipts for the same event,
+    // type and user: a single nested receipt map has only one value at that key.
+    let mut receipts = Vec::with_capacity(rows.len());
+    for item in rows {
+        let content = ReceiptEventContent(BTreeMap::from([(
+            item.event_id,
+            BTreeMap::from([(
+                ReceiptType::from(item.ty),
+                BTreeMap::from([(
+                    item.user_id.clone(),
+                    serde_json::from_value(item.json_data).unwrap_or_default(),
+                )]),
+            )]),
+        )]));
+        receipts.push((item.user_id, content));
     }
 
     Ok(receipts)

@@ -859,3 +859,6 @@ impl MatrixServer {
 
 #[cfg(test)]
 mod oauth_admin_tests;
+
+#[cfg(test)]
+mod concurrency_review_tests;

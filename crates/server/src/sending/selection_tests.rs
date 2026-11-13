@@ -367,7 +367,10 @@ async fn legacy_selectors(server: &ServerName) -> BenchmarkOutput {
         }
     }
     for room in state::server_joined_rooms(server).await.unwrap() {
-        for (user, content) in data::room::receipt::read_receipts(&room, 0).await.unwrap() {
+        for (user, content) in data::room::receipt::read_receipts(&room, 0, None)
+            .await
+            .unwrap()
+        {
             if !user.is_local() {
                 continue;
             }
