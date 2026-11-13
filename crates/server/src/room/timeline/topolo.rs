@@ -305,25 +305,31 @@ async fn load_pdus_selected(
                 }
             }
             if !filter.not_types.is_empty() {
-                query = query.filter(events::ty.ne_all(&filter.not_types));
+                query = query.filter(
+                    diesel::dsl::sql::<diesel::sql_types::Bool>("NOT (events.ty LIKE ANY(")
+                        .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(
+                            crate::event::search::event_type_like_patterns(&filter.not_types),
+                        )
+                        .sql("))"),
+                );
             }
             if !filter.not_rooms.is_empty() {
                 query = query.filter(events::room_id.ne_all(&filter.not_rooms));
             }
-            if let Some(rooms) = &filter.rooms
-                && !rooms.is_empty()
-            {
+            if let Some(rooms) = &filter.rooms {
                 query = query.filter(events::room_id.eq_any(rooms));
             }
-            if let Some(senders) = &filter.senders
-                && !senders.is_empty()
-            {
+            if let Some(senders) = &filter.senders {
                 query = query.filter(events::sender_id.eq_any(senders));
             }
-            if let Some(types) = &filter.types
-                && !types.is_empty()
-            {
-                query = query.filter(events::ty.eq_any(types));
+            if let Some(types) = &filter.types {
+                query = query.filter(
+                    diesel::dsl::sql::<diesel::sql_types::Bool>("events.ty LIKE ANY(")
+                        .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(
+                            crate::event::search::event_type_like_patterns(types),
+                        )
+                        .sql(")"),
+                );
             }
         }
         let events: Vec<(OwnedEventId, Seqnum, i64)> = if dir == Direction::Forward {
