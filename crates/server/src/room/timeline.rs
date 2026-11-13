@@ -303,6 +303,25 @@ fn canonicalize_prev_content(
 #[tracing::instrument(skip_all)]
 pub async fn append_pdu(
     pdu: &SnPduEvent,
+    pdu_json: CanonicalJsonObject,
+    state_lock: &RoomMutexGuard,
+) -> AppResult<()> {
+    if pdu.is_backfill {
+        return append_backfilled_pdu(pdu, pdu_json).await;
+    }
+    // Federation and direct promotion callers participate in the same fence as
+    // local authors and history purge. Local builders already hold this lock and
+    // call the private body below, avoiding re-entry through a second connection.
+    coordination_connect()
+        .transaction::<_, AppError, _>(async |conn| {
+            data::room::timeline::lock_event_append(conn, &pdu.room_id).await?;
+            append_pdu_fenced(pdu, pdu_json, state_lock).await
+        })
+        .await
+}
+
+async fn append_pdu_fenced(
+    pdu: &SnPduEvent,
     mut pdu_json: CanonicalJsonObject,
     state_lock: &RoomMutexGuard,
 ) -> AppResult<()> {
@@ -1101,7 +1120,7 @@ async fn build_and_append_pdu_locked(
 
     let (pdu, pdu_json, _event_guard) = PduBuilder::save_as_outlier(pdu, pdu_json, sender).await?;
 
-    append_pdu(&pdu, pdu_json, state_lock).await?;
+    append_pdu_fenced(&pdu, pdu_json, state_lock).await?;
 
     // In case we are kicking or banning a user, we need to inform their server of the change
     // move to append pdu
