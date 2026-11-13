@@ -68,6 +68,8 @@ pub async fn get_pdus_by_room(
 /// State events (those with state_key set) are preserved.
 /// Returns the number of events deleted.
 pub async fn purge_room_history(room_id: &RoomId, before_ts: i64) -> DataResult<i64> {
+    // Keep the database millisecond bound directly; SystemTime overflows on
+    // Windows for the delete-room all-history cutoff (i64::MAX).
     let before_ts_millis = UnixMillis(u64::try_from(before_ts).map_err(|_| {
         crate::core::MatrixError::invalid_param("purge timestamp must not be negative")
     })?);

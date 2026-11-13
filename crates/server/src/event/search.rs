@@ -153,6 +153,28 @@ pub(crate) fn event_type_matches(pattern: &str, event_type: &str) -> bool {
     rest.ends_with(suffix)
 }
 
+/// PostgreSQL LIKE uses percent and underscore as metacharacters. Matrix only
+/// gives special meaning to `*`; bind translated patterns rather than SQL text.
+pub(crate) fn event_type_like_patterns(patterns: &[String]) -> Vec<String> {
+    patterns
+        .iter()
+        .map(|pattern| {
+            let mut escaped = String::new();
+            for ch in pattern.chars() {
+                match ch {
+                    '*' => escaped.push('%'),
+                    '%' | '_' | '\\' => {
+                        escaped.push('\\');
+                        escaped.push(ch);
+                    }
+                    _ => escaped.push(ch),
+                }
+            }
+            escaped
+        })
+        .collect()
+}
+
 fn searchable_events<'a>(
     room_ids: &'a [OwnedRoomId],
     criteria: &'a Criteria,

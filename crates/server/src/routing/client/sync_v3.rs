@@ -61,7 +61,7 @@ pub(super) async fn sync_events_v3(
         args.set_presence.as_str(),
     )
     .await?;
-    let watch_baseline = if args.timeout == Some(Duration::ZERO) {
+    let watch_baseline = if args.timeout.unwrap_or(Duration::ZERO).is_zero() {
         None
     } else {
         Some(crate::watcher::load_watch_snapshot(sender_id, device_id, false).await?)
@@ -75,10 +75,9 @@ pub(super) async fn sync_events_v3(
         && body.device_lists.is_empty()
         && body.to_device.is_empty()
     {
-        // Hang a few seconds so requests are not spammed
-        // Stop hanging if new info arrives
-        let default = Duration::from_secs(30);
-        let duration = std::cmp::min(args.timeout.unwrap_or(default), default);
+        // Clients opt in to long polling; omitted timeout means an immediate response.
+        let max_wait = Duration::from_secs(30);
+        let duration = std::cmp::min(args.timeout.unwrap_or(Duration::ZERO), max_wait);
         // Setup watchers, so if there's no response, we can wait for them
         if let Some(watch_baseline) = watch_baseline {
             let watcher =

@@ -16,7 +16,24 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  quality:
+    name: Validate the exact release commit
+    if: github.repository_owner == 'palpo-im'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/quality-control.yml
+
+  federation:
+    name: Validate release interoperability
+    if: github.repository_owner == 'palpo-im'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/complement.yml
+    with:
+      require_clean_suite: true
+
   build:
+    needs: [quality, federation]
     name: Build image for ${{ matrix.platform }}
     runs-on: ${{ matrix.runs_on }}
     strategy:
@@ -91,6 +108,10 @@ jobs:
             # type=semver,pattern=v{{major}}.{{minor}},enable=${{ steps.check-tag-format.outputs.stable == 'true' }}
             # type=semver,pattern=v{{major}},enable=${{ steps.check-tag-format.outputs.stable == 'true' }}
             # type=raw,value=latest,enable=${{ steps.check-tag-format.outputs.stable == 'true' && steps.check-tag-format.outputs.latest == 'true' }}
+
+      - name: Record build date
+        id: build-metadata
+        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push by digest
         id: build

@@ -4,6 +4,7 @@ permissions:
   contents: read
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
@@ -188,6 +189,7 @@ jobs:
             concurrency_review_tests::review_purge_preserves_tips_and_resumes_committed_batches
             concurrency_review_tests::review_receipt_latest_projection_retains_log_and_threads
             watcher::review_tests::review_watch_receipts_presence_and_pre_response_baseline
+            routing::admin::contract_tests::review_admin_operations_report_committed_results_and_failures
             routing::client::room::state::state_snapshot_tests::review_state_gets_share_departure_snapshot_and_rejoin_boundary
             routing::client::media::upload_tests::http_reserved_media_enforces_owner_and_safe_download_headers
             media::upload::tests::review_reserved_upload_serializes_and_recovers_storage_and_db_failures
@@ -216,6 +218,7 @@ jobs:
             routing::capability_contract_tests::review_threepid_capabilities_and_rejections_match_routes
             routing::capability_contract_tests::review_thirdparty_queries_track_live_appservice_disable
             routing::thirdparty_peer_tests::review_thirdparty_queries_isolate_failed_peers_and_preserve_instances
+            sync_v3::protocol_contract_tests::review_protocol_openid_full_state_filters_and_leave_retry
             routing::federation::tests::review_onbind_respects_disabled_federation
             media::preview::resource_tests::review_preview_requests_reclaim_failed_urls_and_deduplicate
           )
