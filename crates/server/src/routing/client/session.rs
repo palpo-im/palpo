@@ -1167,12 +1167,17 @@ async fn refresh_access_token(
     body: JsonBody<RefreshTokenReqBody>,
     req: &mut Request,
 ) -> JsonResult<RefreshTokenResBody> {
-    hoops::check_login_rate(req)?;
     let now = UnixMillis::now().get();
     let access_token = utils::random_string(TOKEN_LENGTH);
     let refresh_token = utils::random_string(TOKEN_LENGTH);
     let (user_id, expires_at) =
-        rotate_refresh_token(&body.refresh_token, &access_token, &refresh_token, now).await?;
+        match rotate_refresh_token(&body.refresh_token, &access_token, &refresh_token, now).await {
+            Ok(result) => result,
+            Err(error) => {
+                hoops::check_invalid_refresh_rate(req)?;
+                return Err(error);
+            }
+        };
     data::user::invalidate_user(&user_id);
     json_ok(RefreshTokenResBody {
         access_token,
@@ -1233,6 +1238,10 @@ pub(crate) async fn rotate_refresh_token(
             if row.expires_at <= now as i64 || row.ultimate_session_expires_at <= now as i64 {
                 return Err(MatrixError::unknown_token("Refresh session expired", false).into());
             }
+            // Only a validated session can spend this device's refresh budget.
+            // Token rotation preserves the key, while other devices/IP peers
+            // and password login have independent allowances.
+            hoops::check_refresh_rate(row.user_id.as_str(), row.device_id.as_str())?;
             let expires = now
                 .saturating_add(config::get().access_token_ttl)
                 .min(row.ultimate_session_expires_at as u64);
