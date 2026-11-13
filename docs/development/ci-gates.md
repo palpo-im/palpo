@@ -102,3 +102,17 @@ Cargo's shared `database_` filter matches anywhere in a qualified test name.
 CI checks the discovered selection for isolated `::review_` cases before running
 that batch, and requires isolated case names to avoid `database_` altogether.
 These cases own process-wide configuration and pools as well as their database.
+
+## Release promotion
+
+Binary and container release workflows call the local quality-control and
+Complement reusable workflows as dependencies. Local reusable workflow references
+execute from the caller's commit, so a previous green branch build cannot authorize
+a different release SHA. Manual dispatch uses the same checks. See the
+[GitHub reusable workflow reference](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+
+Binary releases remain drafts until all platform uploads succeed; a failed upload
+leaves a draft that can be retried. Container manifests are promoted only after
+all platform builds and the same-commit gates complete. Registry pushes by digest
+are preparation, not a version tag promotion. This does not replace repository
+branch, tag or environment protection rules.

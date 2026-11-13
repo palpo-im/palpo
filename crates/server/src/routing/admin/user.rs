@@ -166,10 +166,8 @@ pub async fn delete_devices(
         return Err(MatrixError::not_found("User not found").into());
     }
 
-    for device_id in body.devices {
-        let device_id: OwnedDeviceId = device_id.into();
-        let _ = crate::user::remove_device(&user_id, &device_id).await;
-    }
+    let devices: Vec<OwnedDeviceId> = body.devices.into_iter().map(Into::into).collect();
+    crate::user::remove_devices(&user_id, &devices).await?;
 
     empty_ok()
 }

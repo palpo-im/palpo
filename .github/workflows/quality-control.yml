@@ -4,6 +4,7 @@ permissions:
   contents: read
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
@@ -183,6 +184,7 @@ jobs:
           # Configuration and pools are process-global. Give each exact case
           # its own process and empty database in both supported feature modes.
           cases=(
+            routing::admin::contract_tests::review_admin_operations_report_committed_results_and_failures
             routing::client::room::state::state_snapshot_tests::review_state_gets_share_departure_snapshot_and_rejoin_boundary
             routing::client::media::upload_tests::http_reserved_media_enforces_owner_and_safe_download_headers
             media::upload::tests::review_reserved_upload_serializes_and_recovers_storage_and_db_failures

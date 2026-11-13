@@ -184,16 +184,13 @@ pub async fn delete_media_by_date_size(
 
 /// GET /_synapse/admin/v1/room/{room_id}/media
 ///
-/// Note: This requires scanning events in the room which is not currently implemented.
-/// Returns empty lists for now.
+/// Room-scoped media indexing is not implemented. Report that explicitly so
+/// administrators cannot confuse unsupported inventory with an empty room.
 #[endpoint(operation_id = "list_media_in_room")]
 pub fn list_media_in_room(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomMediaResponse> {
     let _room_id = room_id.into_inner();
 
-    json_ok(RoomMediaResponse {
-        local: vec![],
-        remote: vec![],
-    })
+    Err(MatrixError::unrecognized("Room media inventory is not implemented").into())
 }
 
 /// GET /_synapse/admin/v1/users/{user_id}/media

@@ -70,10 +70,9 @@ pub async fn get_pdus_by_room(
 /// State events (those with state_key set) are preserved.
 /// Returns the number of events deleted.
 pub async fn purge_room_history(room_id: &RoomId, before_ts: i64) -> DataResult<i64> {
-    let before_ts_millis = UnixMillis::from_system_time(
-        std::time::UNIX_EPOCH + std::time::Duration::from_millis(before_ts as u64),
-    )
-    .unwrap_or(UnixMillis::now());
+    // This is already a database millisecond timestamp. Routing it through
+    // SystemTime overflows on Windows for the delete-room all-history bound.
+    let before_ts_millis = UnixMillis(before_ts.max(0) as u64);
 
     let mut conn = connect();
 

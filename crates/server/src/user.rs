@@ -232,6 +232,26 @@ pub async fn remove_device(user_id: &UserId, device_id: &DeviceId) -> AppResult<
     crate::user::key::send_device_key_update(user_id, device_id).await
 }
 
+/// Atomically revoke selected devices and persist their device-list notifications.
+pub async fn remove_devices(user_id: &UserId, devices: &[OwnedDeviceId]) -> AppResult<()> {
+    let rooms = data::user::joined_rooms(user_id).await?;
+    let servers: Vec<_> = data::room::joined_servers_for_rooms(&rooms)
+        .await?
+        .into_iter()
+        .filter(|server| {
+            server != &config::get().server_name
+                && config::get().federation.is_server_allowed(server)
+        })
+        .collect();
+    let removed =
+        data::user::device::remove_selected_devices(user_id, devices, &rooms, &servers).await?;
+    if !removed.is_empty() {
+        // A failed wakeup is safe: the durable scanner retries committed deletion EDUs.
+        crate::sending::wake_servers(servers.into_iter(), None).await?;
+    }
+    Ok(())
+}
+
 pub async fn remove_all_devices(user_id: &UserId) -> AppResult<()> {
     let mut changed_device_ids = data::user::all_device_ids(user_id).await?;
     for device_id in data::user::key::all_device_key_ids(user_id).await? {
