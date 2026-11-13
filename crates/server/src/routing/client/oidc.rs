@@ -824,25 +824,24 @@ pub async fn oidc_callback(req: &mut Request, res: &mut Response) -> AppResult<(
         return Ok(());
     }
 
-    // Step 13: Create Matrix device and access token
-    let device_id = format!("OIDC_{}", generate_random_string(8));
-    let access_token = create_access_token_for_user(&user, &device_id).await?;
-
     tracing::info!(
         "OIDC authentication successful for user '{}' via provider '{}'",
-        matrix_user_id,
+        user.id,
         session.provider
     );
+    res.render(Json(direct_login_response(&user).await?));
+    Ok(())
+}
 
-    // Step 14: Return Matrix authentication credentials for callers using the
-    // custom OIDC endpoint directly.
-    res.render(Json(OidcLoginResponse {
-        user_id: matrix_user_id,
+async fn direct_login_response(user: &DbUser) -> AppResult<OidcLoginResponse> {
+    let device_id = format!("OIDC_{}", generate_random_string(8));
+    let access_token = create_access_token_for_user(user, &device_id).await?;
+    Ok(OidcLoginResponse {
+        user_id: user.id.to_string(),
         access_token,
         device_id,
-        home_server: config.server_name.to_string(),
-    }));
-    Ok(())
+        home_server: config::server_name().to_string(),
+    })
 }
 
 pub(super) fn append_login_token(
@@ -1639,6 +1638,20 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(renamed.id, a.id);
+        // Direct callers must receive the account owning the returned token,
+        // both after collision allocation and after a provider username rename.
+        for resolved in [&external, &renamed] {
+            let response = direct_login_response(resolved).await.unwrap();
+            assert_eq!(response.user_id, resolved.id.as_str());
+            let authenticated = crate::data::user::authenticate_token(
+                &response.access_token,
+                std::time::Duration::ZERO,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(authenticated.user.id, resolved.id);
+        }
         let closed = crate::config::OidcConfig {
             allow_registration: false,
             ..Default::default()
@@ -1906,6 +1919,73 @@ mod tests {
             .await
             .is_err()
         );
+        // Hold the device as revocation does, then start a refresh. Once it
+        // waits on that device, it must not already own the credential lock.
+        let race_device = OwnedDeviceId::from("REFRESH_REVOKE");
+        crate::data::user::device::create_device(&b.id, &race_device, "race-access", None, None)
+            .await
+            .unwrap();
+        crate::data::user::device::set_refresh_token(
+            &b.id,
+            &race_device,
+            "race-old",
+            now + 120_000,
+            now + 120_000,
+        )
+        .await
+        .unwrap();
+        #[derive(diesel::QueryableByName)]
+        struct Waiting {
+            #[diesel(sql_type = diesel::sql_types::Bool)]
+            waiting: bool,
+        }
+        let refresh = crate::data::connect()
+            .transaction::<_, AppError, _>(async |conn| {
+                user_devices::table
+                    .filter(user_devices::user_id.eq(&b.id))
+                    .filter(user_devices::device_id.eq(&race_device))
+                    .for_update()
+                    .first::<crate::data::user::DbUserDevice>(conn).await?;
+                let refresh = tokio::spawn(async move {
+                    crate::routing::client::session::rotate_refresh_token(
+                        "race-old", "race-new-access", "race-new-refresh", now,
+                    ).await
+                });
+                tokio::time::timeout(std::time::Duration::from_secs(4), async {
+                    loop {
+                        let state = diesel::sql_query(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%user_devices%') AS waiting",
+                        ).get_result::<Waiting>(&mut crate::data::db()).await.unwrap();
+                        if state.waiting { break; }
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                }).await.expect("refresh must block on the held device");
+                // Fails immediately with the old refresh-first locking order.
+                user_refresh_tokens::table.filter(user_refresh_tokens::token.eq("race-old"))
+                    .for_update().no_wait()
+                    .first::<crate::data::user::DbRefreshToken>(conn).await?;
+                diesel::delete(user_devices::table
+                    .filter(user_devices::user_id.eq(&b.id))
+                    .filter(user_devices::device_id.eq(&race_device))).execute(conn).await?;
+                diesel::delete(user_access_tokens::table
+                    .filter(user_access_tokens::user_id.eq(&b.id))
+                    .filter(user_access_tokens::device_id.eq(&race_device))).execute(conn).await?;
+                diesel::delete(user_refresh_tokens::table
+                    .filter(user_refresh_tokens::token.eq("race-old"))).execute(conn).await?;
+                Ok(refresh)
+            }).await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(4), refresh)
+            .await
+            .expect("revoked refresh must finish without deadlock")
+            .unwrap();
+        assert!(result.is_err());
+        assert!(
+            crate::data::user::authenticate_token("race-new-access", std::time::Duration::ZERO,)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
         // Expiry must be enforced on cache hits as well as fresh database reads.
         diesel::update(
             user_access_tokens::table

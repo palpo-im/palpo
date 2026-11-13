@@ -1183,7 +1183,7 @@ async fn refresh_access_token(
     })
 }
 
-// Lock the credential and its device before rotating both rows in one transaction.
+// Lock user, device, then credential, matching device revocation order.
 // Competing refreshes consume the old token once; no access token is required.
 pub(crate) async fn rotate_refresh_token(
     old: &str,
@@ -1194,8 +1194,36 @@ pub(crate) async fn rotate_refresh_token(
     use horme::OptionalExtension as _;
     data::connect()
         .transaction::<_, AppError, _>(async |conn| {
-            let row = user_refresh_tokens::table
+            // Discover the owner without locking a credential ahead of its device.
+            let candidate = user_refresh_tokens::table
                 .filter(user_refresh_tokens::token.eq(old))
+                .first::<data::user::DbRefreshToken>(conn)
+                .await
+                .optional()?
+                .ok_or_else(|| MatrixError::unknown_token("Invalid refresh token", false))?;
+            let user = users::table
+                .find(&candidate.user_id)
+                .for_update()
+                .first::<DbUser>(conn)
+                .await
+                .optional()?
+                .ok_or_else(|| MatrixError::unknown_token("Session has been revoked", false))?;
+            user::ensure_account_usable(&user)?;
+            user_devices::table
+                .filter(user_devices::user_id.eq(&candidate.user_id))
+                .filter(user_devices::device_id.eq(&candidate.device_id))
+                .for_update()
+                .first::<DbUserDevice>(conn)
+                .await
+                .optional()?
+                .ok_or_else(|| MatrixError::unknown_token("Session has been revoked", false))?;
+            // A competing rotation/revocation may have changed the token while
+            // we waited for the device. Re-read and validate under the locks.
+            let row = user_refresh_tokens::table
+                .find(candidate.id)
+                .filter(user_refresh_tokens::token.eq(old))
+                .filter(user_refresh_tokens::user_id.eq(&candidate.user_id))
+                .filter(user_refresh_tokens::device_id.eq(&candidate.device_id))
                 .for_update()
                 .first::<data::user::DbRefreshToken>(conn)
                 .await
@@ -1205,22 +1233,6 @@ pub(crate) async fn rotate_refresh_token(
             if row.expires_at <= now as i64 || row.ultimate_session_expires_at <= now as i64 {
                 return Err(MatrixError::unknown_token("Refresh session expired", false).into());
             }
-            let user = users::table
-                .find(&row.user_id)
-                .for_update()
-                .first::<DbUser>(conn)
-                .await
-                .optional()?
-                .ok_or_else(|| MatrixError::unknown_token("Session has been revoked", false))?;
-            user::ensure_account_usable(&user)?;
-            user_devices::table
-                .filter(user_devices::user_id.eq(&row.user_id))
-                .filter(user_devices::device_id.eq(&row.device_id))
-                .for_update()
-                .first::<DbUserDevice>(conn)
-                .await
-                .optional()?
-                .ok_or_else(|| MatrixError::unknown_token("Session has been revoked", false))?;
             let expires = now
                 .saturating_add(config::get().access_token_ttl)
                 .min(row.ultimate_session_expires_at as u64);
