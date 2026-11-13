@@ -376,11 +376,9 @@ async fn process_edu_typing(origin: &ServerName, typing: TypingContent) {
         .unwrap_or(false)
     {
         if typing.typing {
-            let timeout = UnixMillis::now().get().saturating_add(
-                crate::config::get()
-                    .typing
-                    .federation_timeout
-                    .saturating_mul(1000),
+            let timeout = room::typing::federation_deadline(
+                UnixMillis::now().get(),
+                crate::config::get().typing.federation_timeout,
             );
             let _ =
                 room::typing::add_typing(&typing.user_id, &typing.room_id, timeout, false).await;
