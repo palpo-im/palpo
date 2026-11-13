@@ -35,12 +35,12 @@ interval). This is a scheduler lifecycle check, not a proof that every queued
 destination is delivering successfully or a watchdog for every optional task.
 
 Readiness intentionally avoids scanning the entire outgoing queue on every
-probe. Queue depth, oldest queued age, retry age, worker heartbeat freshness,
-per-destination errors and latency histograms are not implemented by this
-endpoint. In particular, outgoing requests currently have no enqueue timestamp
-from which to report a truthful oldest age. The returned worker and pool status
-is a structured snapshot, not a Prometheus exporter or a complete monitoring
-system. The coordination pool is reported but is not checked out by the probe.
+probe. Use [`GET /diagnostics`](development/outbound-diagnostics.md) for cached
+queue depth, oldest known age, retry counts, scheduler heartbeat and bounded
+latency histograms. Legacy rows without an enqueue timestamp report unknown age;
+they cannot establish an age SLO. Diagnostics counters are process-local and its
+queue sampler has a fixed refresh budget. The coordination pool is reported by
+readiness but is not checked out by its connectivity probe.
 
 Embedded applications keep control of their route names and restart policy.
 `MatrixServer::router()` installs no health or readiness routes. Call

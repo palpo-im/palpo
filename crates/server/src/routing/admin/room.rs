@@ -480,9 +480,7 @@ pub async fn get_room_messages(
 #[endpoint]
 pub async fn get_room_block(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomBlockStatus> {
     let room_id = room_id.into_inner();
-    let blocked = crate::data::room::is_banned(&room_id)
-        .await
-        .unwrap_or(false);
+    let blocked = crate::data::room::is_banned(&room_id).await?;
 
     json_ok(RoomBlockStatus {
         block: blocked,
@@ -509,9 +507,9 @@ pub async fn set_room_block(
 
 /// Delete room (v2)
 ///
-/// Note: The `purge` field is currently not fully implemented.
-/// When purge=true, events are not actually deleted from the database.
-/// This is a known limitation - full purge requires additional data layer support.
+/// Disable admission, publish local member departures, remove local aliases, then
+/// optionally purge non-state history. Errors propagate; a retry resumes from the
+/// remaining members/aliases rather than reporting unfinished work as successful.
 #[endpoint]
 pub async fn delete_room(
     room_id: PathParam<OwnedRoomId>,
@@ -524,12 +522,8 @@ pub async fn delete_room(
         return Err(MatrixError::not_found("Room not found").into());
     }
 
-    let members = room::get_members(&room_id).await?;
-    let kicked_users: Vec<String> = members
-        .iter()
-        .filter(|m| m.server_name().is_local())
-        .map(|m| m.to_string())
-        .collect();
+    let members = room::local_users_in_room(&room_id).await?;
+    let mut kicked_users = Vec::new();
 
     let local_aliases: Vec<String> = room::local_aliases_for_room(&room_id)
         .await?
@@ -541,12 +535,28 @@ pub async fn delete_room(
         room::ban_room(&room_id, true).await?;
     }
 
-    // Disable the room (prevents new joins/messages)
+    // Disable ordinary admission before publishing departures.
     room::disable_room(&room_id, true).await?;
 
+    for member in members
+        .iter()
+        .filter(|member| member.server_name().is_local())
+    {
+        crate::membership::leave_room(
+            member,
+            &room_id,
+            Some("Room deleted by administrator".into()),
+        )
+        .await?;
+        kicked_users.push(member.to_string());
+    }
+    for alias in &local_aliases {
+        let alias = RoomAliasId::parse(alias)
+            .map_err(|_| crate::AppError::internal("Invalid stored room alias"))?;
+        crate::data::room::remove_alias(&alias).await?;
+    }
     if body.purge {
-        // Purge all non-state events by using a far-future timestamp
-        let _ = crate::data::room::timeline::purge_room_history(&room_id, i64::MAX).await;
+        crate::data::room::timeline::purge_room_history(&room_id, i64::MAX).await?;
     }
 
     json_ok(DeleteRoomResponse {

@@ -4,6 +4,7 @@ permissions:
   contents: read
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
@@ -184,6 +185,7 @@ jobs:
           # its own process and empty database in both supported feature modes.
           cases=(
             routing::client::oidc::tests::review_security_receipts_sessions_and_oidc_bindings
+            routing::admin::contract_tests::review_admin_operations_report_committed_results_and_failures
             routing::client::room::state::state_snapshot_tests::review_state_gets_share_departure_snapshot_and_rejoin_boundary
             routing::client::media::upload_tests::http_reserved_media_enforces_owner_and_safe_download_headers
             media::upload::tests::review_reserved_upload_serializes_and_recovers_storage_and_db_failures
@@ -212,6 +214,7 @@ jobs:
             routing::capability_contract_tests::review_threepid_capabilities_and_rejections_match_routes
             routing::capability_contract_tests::review_thirdparty_queries_track_live_appservice_disable
             routing::thirdparty_peer_tests::review_thirdparty_queries_isolate_failed_peers_and_preserve_instances
+            sync_v3::protocol_contract_tests::review_protocol_openid_full_state_filters_and_leave_retry
             routing::federation::tests::review_onbind_respects_disabled_federation
             media::preview::resource_tests::review_preview_requests_reclaim_failed_urls_and_deduplicate
           )

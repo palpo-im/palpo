@@ -267,11 +267,12 @@ pub async fn sync_devices(body: JsonBody<SyncDevicesReqBody>) -> EmptyResult {
         .iter()
         .map(|d| d.device_id.to_string())
         .collect();
-    for device in &current_devices {
-        if !body.devices.contains(device.device_id.as_str()) {
-            let _ = user::remove_device(&user_id, &device.device_id).await;
-        }
-    }
+    let removed: Vec<_> = current_devices
+        .iter()
+        .filter(|device| !body.devices.contains(device.device_id.as_str()))
+        .map(|device| device.device_id.clone())
+        .collect();
+    user::remove_devices(&user_id, &removed).await?;
     for device_id_str in &body.devices {
         if !current_ids.contains(device_id_str) {
             let device_id: OwnedDeviceId = device_id_str.as_str().into();

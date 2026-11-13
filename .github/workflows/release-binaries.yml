@@ -7,7 +7,6 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
     # branches: [main, next]
-  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -27,10 +26,27 @@ env:
 
 #  https://github.com/taiki-e/cargo-hack/blob/main/.github/workflows/release.yml
 jobs:
+  quality:
+    name: Validate the exact release commit
+    if: github.repository_owner == 'palpo-im' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/quality-control.yml
+
+  federation:
+    name: Validate release interoperability
+    if: github.repository_owner == 'palpo-im' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/complement.yml
+    with:
+      require_clean_suite: true
+
   create-release:
+    needs: [quality, federation]
     name: Create GitHub release
     # only publish from the origin repository
-    if: github.repository_owner == 'palpo-im'
+    if: github.repository_owner == 'palpo-im' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -39,13 +55,13 @@ jobs:
           # changelog: "CHANGELOG.md"
           title: "$version"
           branch: main
-          draft: false
+          draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   upload-binaries:
     name: "Upload release binaries"
-    if: github.repository_owner == 'palpo-im'
+    if: github.repository_owner == 'palpo-im' && startsWith(github.ref, 'refs/tags/v')
     needs: create-release
     strategy:
       matrix:
@@ -107,3 +123,15 @@ jobs:
           tar: unix
           zip: windows
           token: ${{ secrets.GITHUB_TOKEN }}
+  publish-release:
+    name: Publish complete release
+    needs: [create-release, upload-binaries]
+    if: github.repository_owner == 'palpo-im' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish after every platform uploaded successfully
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
