@@ -146,6 +146,12 @@ jobs:
           sudo -u postgres createdb -O palpo_test palpo_test
           cargo test -p palpo --all-features database_ -- --ignored --test-threads=1
 
+      - name: Default-feature typing publication regressions
+        run: |
+          sudo -u postgres createdb -O palpo_test palpo_typing_default
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_typing_default \
+            cargo test --locked -p palpo --lib room::typing:: -- --ignored --test-threads=1
+
       - name: Database provider lifecycle regressions
         timeout-minutes: 10
         shell: bash

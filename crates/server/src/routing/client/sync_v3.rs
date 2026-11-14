@@ -82,7 +82,10 @@ pub(super) async fn sync_events_v3(
         if let Some(watch_baseline) = watch_baseline {
             let watcher =
                 crate::watcher::watch_from(sender_id, device_id, false, None, watch_baseline);
-            _ = tokio::time::timeout(duration, watcher).await;
+            // Elapsing is the normal end of a long-poll; a watcher failure is not.
+            if let Ok(result) = tokio::time::timeout(duration, watcher).await {
+                result?;
+            }
         }
 
         // Retry returning data

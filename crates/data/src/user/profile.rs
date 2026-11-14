@@ -66,14 +66,14 @@ async fn lock_profile_stream_shared(conn: &mut AsyncPgConnection) -> horme::Resu
     Ok(())
 }
 
-/// Read the global stream position after every earlier presence publication, profile
+/// Read the global stream position after every earlier presence or typing publication, profile
 /// mutation, write to this device inbox and key-change publication commits.
 ///
 /// These streams allocate from `occur_sn_seq`. Holding their advisory locks in one
 /// transaction prevents the sequence read from observing a position allocated by an
 /// uncommitted writer from another stream. This extends
 /// [`curr_sn_after_presence_writes`](super::curr_sn_after_presence_writes) with the profile
-/// stream, taking the locks in order: presence -> profile -> inbox -> keys.
+/// stream, taking the locks in order: presence -> typing -> profile -> inbox -> keys.
 pub async fn curr_sn_after_presence_profile_and_inbox_writes(
     user_id: &UserId,
     device_id: &DeviceId,
@@ -81,6 +81,7 @@ pub async fn curr_sn_after_presence_profile_and_inbox_writes(
     connect()
         .transaction::<_, DataError, _>(async |conn| {
             super::presence::lock_presence_stream_shared(conn).await?;
+            crate::room::typing::lock_typing_stream_shared(conn).await?;
             // Readers may run together, but an exclusive writer cannot publish a stream
             // position until its profile row and change row have both committed.
             lock_profile_stream_shared(conn).await?;
