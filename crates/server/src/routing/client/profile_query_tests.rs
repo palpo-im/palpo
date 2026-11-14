@@ -95,6 +95,7 @@ async fn query_http(enabled: bool, rate: bool) {
         .set(
             serde_json::from_value(json!({
                 "server_name":"profiles.example", "db":{"url":"unused"},
+                "ip_range_denylist":[], "federation":{"allow_loopback":true},
                 "enable_batch_profile_queries":enabled,
                 "rc_message":{"per_second":if rate { 0.000001 } else { 0.0 },"burst":1},
                 "require_auth_for_profile_requests":true
