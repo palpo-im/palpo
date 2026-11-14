@@ -241,6 +241,8 @@ fn is_trusted_proxy(ip: IpAddr, trusted_proxies: &[String]) -> bool {
 }
 
 static LOGIN_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+static REFRESH_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+static INVALID_REFRESH_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 static LOGIN_TOKEN_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 static REGISTRATION_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 static REGISTRATION_AVAILABLE_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
@@ -252,6 +254,30 @@ static USER_DIRECTORY_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter
 pub fn check_login_rate(req: &Request) -> AppResult<()> {
     if let Some(ip) = extract_ip(req) {
         LOGIN_LIMITER.check(&ip, &crate::config::get().rc_login)?;
+    }
+    Ok(())
+}
+
+// Allow early refreshes and retries throughout even short configured lifetimes.
+fn refresh_rate_config(access_ttl_ms: u64, refresh_ttl_ms: u64) -> crate::config::RateLimitConfig {
+    crate::config::RateLimitConfig {
+        per_second: 4_000.0 / access_ttl_ms.min(refresh_ttl_ms).max(1) as f64,
+        burst: 5,
+    }
+}
+
+pub fn check_refresh_rate(user_id: &str, device_id: &str) -> AppResult<()> {
+    let config = crate::config::get();
+    let key = serde_json::to_string(&(user_id, device_id)).expect("string tuple serializes");
+    REFRESH_LIMITER.check(
+        &key,
+        &refresh_rate_config(config.access_token_ttl, config.refresh_token_ttl),
+    )
+}
+
+pub fn check_invalid_refresh_rate(req: &Request) -> AppResult<()> {
+    if let Some(ip) = extract_ip(req) {
+        INVALID_REFRESH_LIMITER.check(&ip, &crate::config::get().rc_login)?;
     }
     Ok(())
 }
@@ -326,6 +352,39 @@ mod rate_limit_tests {
 
     use super::{RateLimiter, client_ip};
     use crate::config::RateLimitConfig;
+
+    #[test]
+    fn refresh_rate_sustains_sessions_and_bounds_retry_bursts() {
+        use std::time::{Duration, Instant};
+        for (access, refresh) in [(60_000, 120_000), (10, 20), (120_000, 30_000)] {
+            let config = super::refresh_rate_config(access, refresh);
+            let limiter = RateLimiter::new();
+            let start = Instant::now();
+            // Early refresh every half lifetime remains sustainable long after
+            // the old shared login bucket's initial burst would be exhausted.
+            for i in 0..1_000 {
+                let at = start + Duration::from_millis(i * access.min(refresh) / 2);
+                assert!(limiter.check_at("device-a", &config, true, at).is_ok());
+                assert!(limiter.check_at("device-b", &config, true, at).is_ok());
+            }
+            let limiter = RateLimiter::new();
+            for _ in 0..config.burst {
+                assert!(limiter.check_at("device-a", &config, true, start).is_ok());
+            }
+            assert!(limiter.check_at("device-a", &config, true, start).is_err());
+            assert!(limiter.check_at("device-b", &config, true, start).is_ok());
+            assert!(
+                limiter
+                    .check_at(
+                        "device-a",
+                        &config,
+                        true,
+                        start + Duration::from_millis(access.min(refresh))
+                    )
+                    .is_ok()
+            );
+        }
+    }
 
     #[test]
     fn forwarded_chain_stops_at_first_untrusted_hop() {

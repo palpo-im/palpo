@@ -68,6 +68,7 @@ pub struct TokenAuth {
     pub user: DbUser,
     pub device: DbUserDevice,
     pub access_token_id: i64,
+    pub expires_at: Option<UnixMillis>,
 }
 
 struct CachedAuth {
@@ -90,7 +91,15 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 fn cache_get(token: &str, ttl: Duration) -> Option<TokenAuth> {
     let mut cache = CACHE.lock().ok()?;
     let fresh = match cache.get_mut(token) {
-        Some(entry) if entry.cached_at.elapsed() < ttl => Some(entry.auth.clone()),
+        Some(entry)
+            if entry.cached_at.elapsed() < ttl
+                && entry
+                    .auth
+                    .expires_at
+                    .is_none_or(|expiry| expiry > UnixMillis::now()) =>
+        {
+            Some(entry.auth.clone())
+        }
         Some(_) => None, // expired
         None => return None,
     };
@@ -173,6 +182,12 @@ pub async fn authenticate_token(token: &str, cache_ttl: Duration) -> DataResult<
         Err(e) => return Err(e.into()),
     };
 
+    if access_token
+        .expires_at
+        .is_some_and(|expiry| expiry <= UnixMillis::now())
+    {
+        return Ok(None);
+    }
     let user = match users::table
         .find(&access_token.user_id)
         .first::<DbUser>(&mut crate::db())
@@ -198,6 +213,7 @@ pub async fn authenticate_token(token: &str, cache_ttl: Duration) -> DataResult<
         user,
         device,
         access_token_id: access_token.id,
+        expires_at: access_token.expires_at,
     };
     if caching {
         cache_put(token, auth.clone(), generation);

@@ -60,6 +60,7 @@ pub async fn get_refresh_token_expires_at(
         .filter(user_refresh_tokens::user_id.eq(user_id))
         .filter(user_refresh_tokens::device_id.eq(device_id))
         .filter(user_refresh_tokens::token.eq(token))
+        .filter(user_refresh_tokens::ultimate_session_expires_at.gt(UnixMillis::now().get() as i64))
         .select(user_refresh_tokens::expires_at)
         .first::<i64>(&mut crate::db())
         .await

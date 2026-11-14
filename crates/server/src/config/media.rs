@@ -39,12 +39,17 @@ pub struct MediaConfig {
 
     /// Maximum number of bytes accepted when fetching remote media content
     /// from a remote homeserver via federation. The entire response is
-    /// buffered when the remote server returns a multipart response, so this
-    /// limit prevents unbounded memory allocation. Defaults to 100 MiB.
+    /// buffered when the remote server returns a multipart response. Ordinary
+    /// streamed responses are also counted and terminated at this budget. Defaults to 100 MiB.
     ///
     /// default: 104857600
     #[serde(default = "default_max_remote_media_size")]
     pub max_remote_media_size: usize,
+
+    /// Maximum active remote content downloads, including bodies streaming to clients.
+    /// Excess requests receive M_LIMIT_EXCEEDED. default: 16
+    #[serde(default = "default_max_concurrent_remote_downloads")]
+    pub max_concurrent_remote_downloads: usize,
 
     /// Check consistency of the media directory at startup:
     /// 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
@@ -99,6 +104,7 @@ impl Default for MediaConfig {
             freeze_legacy: true,
             max_remote_thumbnail_size: default_max_remote_thumbnail_size(),
             max_remote_media_size: default_max_remote_media_size(),
+            max_concurrent_remote_downloads: default_max_concurrent_remote_downloads(),
             startup_check: true,
             compat_file_link: false,
             prune_missing: false,
@@ -113,4 +119,8 @@ fn default_max_remote_thumbnail_size() -> usize {
 
 fn default_max_remote_media_size() -> usize {
     104_857_600
+}
+
+fn default_max_concurrent_remote_downloads() -> usize {
+    16
 }

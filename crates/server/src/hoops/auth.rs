@@ -161,6 +161,7 @@ async fn auth_by_local_token(token: &str, aa: &AuthArgs, depot: &mut Depot) -> A
         user,
         device,
         access_token_id,
+        ..
     }) = token_auth
     {
         crate::user::ensure_account_usable(&user)?;

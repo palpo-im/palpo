@@ -573,7 +573,11 @@ pub async fn set_access_token(
         ))
         .on_conflict((user_access_tokens::user_id, user_access_tokens::device_id))
         .do_update()
-        .set(user_access_tokens::token.eq(token))
+        .set((
+            user_access_tokens::token.eq(token),
+            user_access_tokens::refresh_token_id.eq(refresh_token_id),
+            user_access_tokens::expires_at.eq(None::<UnixMillis>),
+        ))
         .execute(&mut crate::db())
         .await?;
 

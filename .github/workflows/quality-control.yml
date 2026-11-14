@@ -190,6 +190,7 @@ jobs:
           # Configuration and pools are process-global. Give each exact case
           # its own process and empty database in both supported feature modes.
           cases=(
+            routing::client::oidc::tests::review_security_receipts_sessions_and_oidc_bindings
             sync_v3::resource_review_tests::review_live_promotion_and_purge_share_fence_and_atomic_tips
             sync_v3::resource_review_tests::review_filtered_room_skips_payloads_and_keeps_independent_membership
             concurrency_review_tests::review_purge_preserves_tips_and_resumes_committed_batches
@@ -242,7 +243,7 @@ jobs:
             cargo test --locked -p palpo --lib "${features[@]}" --no-run
             # These resource lifecycle cases need no database and must also run
             # with default features (the workspace suite uses all features).
-            for module in media::preview::resource_tests::review_preview_ hoops::rate_limit_tests::review_rate_limit_ readiness::tests::review_readiness_; do
+            for module in media::remote::download_budget_tests:: media::preview::resource_tests::review_preview_ hoops::rate_limit_tests::review_rate_limit_ readiness::tests::review_readiness_; do
               cargo test --locked -p palpo --lib "${features[@]}" "$module"
             done
             index=0

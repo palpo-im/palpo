@@ -1,5 +1,42 @@
 # Upgrading Palpo
 
+## Security review: identity bindings, receipts and refresh sessions
+
+Private read receipts are now visible only to their sender in both sync APIs.
+Remote media content is limited by `media.max_remote_media_size` even when streamed;
+`media.max_concurrent_remote_downloads` (default 16) admits content and thumbnail
+fetches without an unbounded waiting queue. A streaming response keeps its slot
+until EOF, error or client cancellation. Exceeding the byte budget terminates
+the response body; clients must treat a truncated download as failed.
+
+Refresh-enabled native sessions now use `access_token_ttl` (default 60000 ms),
+`refresh_token_ttl` for refresh idle expiry (default 120000 ms), and `session_ttl`
+for the absolute session deadline (default 3600000 ms). Refresh does not require
+an access token. It atomically consumes the refresh credential, rotates both
+credentials and preserves the original absolute deadline. A replay is rejected.
+Non-refresh logins retain non-expiring access tokens. Existing refresh sessions
+receive enforced access expiry on their next successful refresh; upgrading does
+not retroactively expire unlinked legacy access tokens. Revoke legacy sessions
+explicitly if their provenance or previous lifetime is unacceptable.
+
+The `oidc_identity_bindings` migration creates an empty identity binding table.
+**Before enabling OIDC traffic after upgrade**, operators must verify legacy
+account ownership using their trusted provider directory and populate the exact
+`(issuer, subject, user_id)` mapping in this table in a maintenance window. Use
+the issuer string returned by the validated discovery metadata and the original
+case-sensitive subject. The database enforces unique external identities and
+unique bound accounts. Do not derive mappings from display names, email prefixes
+or the previous generated Matrix localpart alone. Retain an audit trail of the
+verified mapping and use parameterized SQL in migration tooling.
+
+Unbound identities cannot implicitly claim an existing Matrix ID. With OIDC
+registration disabled they are rejected; with registration enabled they receive
+a new account, allocating a new localpart if the proposed name already exists.
+This includes legacy OIDC accounts that have not been verified and bound. Exact
+issuer/subject bindings survive provider username and profile changes. Provider
+issuer changes require an explicitly verified administrative migration. There
+is no automatic account-linking endpoint or unverified backfill.
+
 ## Query-scoped connection leases
 
 Building from source now requires Rust 1.96 or newer for Horme 0.4. Ordinary

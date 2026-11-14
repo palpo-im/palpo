@@ -1382,3 +1382,11 @@ diesel::table! {
         room_id -> Text,
     }
 }
+
+diesel::table! {
+    oidc_identity_bindings (issuer, subject) {
+        issuer -> Text,
+        subject -> Text,
+        user_id -> Text,
+    }
+}

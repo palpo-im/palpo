@@ -1,22 +1,73 @@
 use std::str::FromStr;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use diesel::prelude::*;
+use futures_util::{Stream, StreamExt};
 use horme::RunQueryDsl;
 use salvo::Response;
 use salvo::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use salvo::http::{HeaderMap, ResBody, StatusCode};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{Dimension, FileMeta};
 use crate::core::federation::media::{ContentReqArgs, FileOrLocation, try_from_multipart_mixed};
 use crate::core::http_headers::ContentDisposition;
 use crate::core::identifiers::*;
-use crate::core::{Mxc, ServerName, UserId};
+use crate::core::{MatrixError, Mxc, ServerName, UserId};
 use crate::data::schema::*;
 use crate::exts::*;
 use crate::utils::content_disposition::make_content_disposition;
 use crate::utils::read_response_limited;
 use crate::{AppError, AppResult, config};
+
+static REMOTE_DOWNLOADS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
+    Arc::new(Semaphore::new(
+        config::get().media.max_concurrent_remote_downloads,
+    ))
+});
+
+fn admit_download(slots: Arc<Semaphore>) -> AppResult<OwnedSemaphorePermit> {
+    slots.try_acquire_owned().map_err(|_| {
+        MatrixError::limit_exceeded(
+            "Too many remote downloads",
+            Some(crate::core::error::RetryAfter::Delay(Duration::from_secs(
+                1,
+            ))),
+        )
+        .into()
+    })
+}
+
+// The response body owns the permit until EOF, stream failure or client cancellation.
+fn budgeted_stream<S, E>(
+    source: S,
+    permit: OwnedSemaphorePermit,
+    max: usize,
+) -> impl Stream<Item = std::io::Result<bytes::Bytes>> + Send
+where
+    S: Stream<Item = Result<bytes::Bytes, E>> + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    futures_util::stream::try_unfold(
+        (Box::pin(source), permit, 0usize),
+        move |(mut source, permit, used)| async move {
+            match source.next().await {
+                None => Ok(None),
+                Some(Err(error)) => Err(std::io::Error::other(error)),
+                Some(Ok(chunk)) => {
+                    if chunk.len() > max.saturating_sub(used) {
+                        return Err(std::io::Error::other(
+                            "Remote media exceeds download budget",
+                        ));
+                    }
+                    let used = used + chunk.len();
+                    Ok(Some((chunk, (source, permit, used))))
+                }
+            }
+        },
+    )
+}
 
 pub async fn fetch_remote_content(
     server_name: &ServerName,
@@ -24,6 +75,7 @@ pub async fn fetch_remote_content(
     requested_filename: Option<&str>,
     res: &mut Response,
 ) -> AppResult<()> {
+    let permit = admit_download(REMOTE_DOWNLOADS.clone())?;
     res.add_header("X-Content-Type-Options", "nosniff", true)?;
     check_fetch_authorized(&Mxc {
         server_name,
@@ -57,6 +109,13 @@ pub async fn fetch_remote_content(
         crate::sending::send_federation_request(server_name, content_req, None).await?
     };
 
+    let max = config::get().media.max_remote_media_size;
+    if content_response
+        .content_length()
+        .is_some_and(|length| length > max as u64)
+    {
+        return Err(MatrixError::too_large("Remote media exceeds download budget").into());
+    }
     let Some(content_type_header) = response_content_type(&content_response)
         .filter(|content_type| is_multipart_mixed(content_type))
     else {
@@ -65,7 +124,11 @@ pub async fn fetch_remote_content(
         let status = content_response.status();
         apply_legacy_response_headers(content_response.headers(), status, requested_filename, res)?;
         res.status_code(status);
-        res.stream(content_response.bytes_stream());
+        res.stream(budgeted_stream(
+            content_response.bytes_stream(),
+            permit,
+            max,
+        ));
         return Ok(());
     };
 
@@ -113,7 +176,12 @@ pub async fn fetch_remote_content(
     res.add_header(CONTENT_DISPOSITION, content_disposition.to_string(), true)?;
     res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
     res.status_code(StatusCode::OK);
-    res.body = ResBody::Once(content.file.into());
+    let file = bytes::Bytes::from(content.file);
+    res.stream(budgeted_stream(
+        futures_util::stream::once(async move { Ok::<_, std::io::Error>(file) }),
+        permit,
+        max,
+    ));
 
     Ok(())
 }
@@ -226,6 +294,7 @@ pub async fn fetch_remote_thumbnail(
     timeout_ms: Duration,
     dim: &Dimension,
 ) -> AppResult<FileMeta> {
+    let _permit = admit_download(REMOTE_DOWNLOADS.clone())?;
     check_fetch_authorized(mxc)?;
 
     let result = fetch_thumbnail_authenticated(mxc, user, server, timeout_ms, dim).await;
@@ -236,23 +305,6 @@ pub async fn fetch_remote_thumbnail(
 
     result
 }
-
-// pub async fn fetch_remote_content(
-//     mxc: &Mxc<'_>,
-//     user: Option<&UserId>,
-//     server: Option<&ServerName>,
-//     timeout_ms: Duration,
-// ) -> AppResult<FileMeta> {
-//     check_fetch_authorized(mxc)?;
-
-//     let result = fetch_content_authenticated(mxc, user, server, timeout_ms).await;
-
-//     if result.is_err() {
-//         return fetch_content_unauthenticated(mxc, user, server, timeout_ms).await;
-//     }
-
-//     result
-// }
 
 async fn fetch_thumbnail_authenticated(
     mxc: &Mxc<'_>,
@@ -802,5 +854,51 @@ mod tests {
         );
         assert!(!response.headers().contains_key(CONTENT_DISPOSITION));
         assert!(!response.headers().contains_key(SET_COOKIE));
+    }
+}
+
+#[cfg(test)]
+mod download_budget_tests {
+    use futures_util::{StreamExt, stream};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn download_budget_releases_admission_on_eof_error_and_cancellation() {
+        let slots = Arc::new(Semaphore::new(1));
+        let permit = admit_download(slots.clone()).unwrap();
+        assert!(admit_download(slots.clone()).is_err());
+        let chunks = stream::iter([
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"ab")),
+            Ok(bytes::Bytes::from_static(b"cd")),
+        ]);
+        let mut body = Box::pin(budgeted_stream(chunks, permit, 3));
+        assert_eq!(body.next().await.unwrap().unwrap().as_ref(), b"ab");
+        assert!(body.next().await.unwrap().is_err());
+        assert_eq!(slots.available_permits(), 1);
+        let permit = admit_download(slots.clone()).unwrap();
+        let body = Box::pin(budgeted_stream(
+            stream::pending::<Result<bytes::Bytes, std::io::Error>>(),
+            permit,
+            3,
+        ));
+        drop(body);
+        assert_eq!(slots.available_permits(), 1);
+        let permit = admit_download(slots.clone()).unwrap();
+        let mut body = Box::pin(budgeted_stream(
+            stream::empty::<Result<bytes::Bytes, std::io::Error>>(),
+            permit,
+            3,
+        ));
+        assert!(body.next().await.is_none());
+        assert_eq!(slots.available_permits(), 1);
+        let permit = admit_download(slots.clone()).unwrap();
+        let mut body = Box::pin(budgeted_stream(
+            stream::iter([Err::<bytes::Bytes, _>(std::io::Error::other("upstream"))]),
+            permit,
+            3,
+        ));
+        assert!(body.next().await.unwrap().is_err());
+        assert_eq!(slots.available_permits(), 1);
     }
 }
