@@ -119,7 +119,10 @@ pub(super) async fn sync_events_v5(
                 profile_after_sn,
                 watch_baseline,
             );
-            _ = tokio::time::timeout(duration, watcher).await;
+            // Elapsing is the normal end of a long-poll; a watcher failure is not.
+            if let Ok(result) = tokio::time::timeout(duration, watcher).await {
+                result?;
+            }
         }
         res_body =
             crate::sync_v5::sync_events(sender_id, device_id, since, &req_body, &known_rooms)

@@ -31,9 +31,18 @@ pub async fn upsert_typing(
     Ok(())
 }
 
-/// Mark a user as no longer typing: the timeout becomes `now_ms` (already
-/// expired) and `occur_sn` is bumped, so every sync connection observes the
-/// "stopped" transition while the row is kept for `TYPING_ROW_GRACE_MS`.
+/// A row whose stop has been published stores `timeout_at` as the negated
+/// instant it stopped. Live rows hold a positive timeout, so the expiry sweep
+/// can tell an unpublished expiry from one already announced without a schema
+/// change, and readers comparing `timeout_at >= now` see neither.
+fn stopped_marker(stopped_at_ms: i64) -> i64 {
+    -stopped_at_ms
+}
+
+/// Mark a user as no longer typing: the row records the stop (see
+/// [`stopped_marker`]) and `occur_sn` is bumped, so every sync connection
+/// observes the "stopped" transition while the row is kept for
+/// `TYPING_ROW_GRACE_MS`.
 pub async fn stop_typing(
     room_id: &RoomId,
     user_id: &UserId,
@@ -46,7 +55,7 @@ pub async fn stop_typing(
             .filter(room_typings::user_id.eq(user_id)),
     )
     .set((
-        room_typings::timeout_at.eq(now_ms),
+        room_typings::timeout_at.eq(stopped_marker(now_ms)),
         room_typings::occur_sn.eq(occur_sn),
     ))
     .execute(&mut crate::db())
@@ -60,16 +69,62 @@ pub async fn stop_typing(
 /// and kept showing them as typing.
 pub const TYPING_ROW_GRACE_MS: i64 = 5 * 60 * 1000;
 
-/// Delete typing rows that expired more than `TYPING_ROW_GRACE_MS` ago.
+/// Delete typing rows that stopped or expired more than `TYPING_ROW_GRACE_MS` ago.
 pub async fn delete_expired_typings(room_id: &RoomId, now_ms: i64) -> DataResult<()> {
+    let cutoff = now_ms - TYPING_ROW_GRACE_MS;
     diesel::delete(
         room_typings::table
             .filter(room_typings::room_id.eq(room_id))
-            .filter(room_typings::timeout_at.lt(now_ms - TYPING_ROW_GRACE_MS)),
+            .filter(
+                room_typings::timeout_at
+                    .lt(cutoff)
+                    .and(room_typings::timeout_at.ge(0))
+                    .or(room_typings::timeout_at
+                        .lt(0)
+                        .and(room_typings::timeout_at.gt(stopped_marker(cutoff)))),
+            ),
     )
     .execute(&mut crate::db())
     .await?;
     Ok(())
+}
+
+/// Publish every typing timeout that has passed: bump `occur_sn` once per
+/// expiry, as [`stop_typing`] does for an explicit stop, so a waiting sync
+/// sees the typing stream move and delivers the shrunken list. Without it a
+/// timeout (the usual end of remote typing) never reached clients.
+pub async fn publish_expired_typings(now_ms: i64) -> DataResult<usize> {
+    diesel::update(
+        room_typings::table
+            // Zero is excluded: negating it would match again on every sweep.
+            .filter(room_typings::timeout_at.gt(0))
+            .filter(room_typings::timeout_at.lt(now_ms)),
+    )
+    .set((
+        room_typings::timeout_at.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>("-timeout_at")),
+        room_typings::occur_sn.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+            "nextval('occur_sn_seq')",
+        )),
+    ))
+    .execute(&mut crate::db())
+    .await
+    .map_err(Into::into)
+}
+
+/// Pull every live typing deadline later than `max_timeout_at` back to it,
+/// bumping `occur_sn` so sync republishes the list. Rows written while the
+/// federated timeout was scaled twice (#660) sit hours in the future.
+pub async fn clamp_typing_deadlines(max_timeout_at: i64) -> DataResult<usize> {
+    diesel::update(room_typings::table.filter(room_typings::timeout_at.gt(max_timeout_at)))
+        .set((
+            room_typings::timeout_at.eq(max_timeout_at),
+            room_typings::occur_sn.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "nextval('occur_sn_seq')",
+            )),
+        ))
+        .execute(&mut crate::db())
+        .await
+        .map_err(Into::into)
 }
 
 /// Sequence number of the most recent typing update in a room (0 if none).
