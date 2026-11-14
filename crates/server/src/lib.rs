@@ -764,6 +764,7 @@ impl MatrixServer {
         }
 
         sending_guard.start();
+        crate::room::typing::start_expiry_sweeper();
         #[cfg(feature = "unstable-msc4532")]
         crate::user::presence::revised::start();
 

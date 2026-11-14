@@ -157,8 +157,8 @@ pub async fn lock_presence_stream_shared(conn: &mut AsyncPgConnection) -> DataRe
     Ok(())
 }
 
-/// Capture after presence, optional device inbox and key-change publication.
-/// Lock order is presence -> inbox -> keys, matching classic sync's additional
+/// Capture after presence, typing, optional device inbox and key-change publication.
+/// Lock order is presence -> typing -> inbox -> keys, matching classic sync's additional
 /// live/sticky lock and the profile-enabled sliding-sync capture.
 pub async fn curr_sn_after_presence_writes(
     device: Option<(&UserId, &DeviceId)>,
@@ -166,6 +166,7 @@ pub async fn curr_sn_after_presence_writes(
     connect()
         .transaction::<_, crate::DataError, _>(async |conn| {
             lock_presence_stream_shared(conn).await?;
+            crate::room::typing::lock_typing_stream_shared(conn).await?;
             if let Some((user, device)) = device {
                 super::device::lock_inbox_stream(conn, user, device).await?;
             }

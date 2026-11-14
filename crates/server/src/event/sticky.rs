@@ -79,7 +79,7 @@ async fn lock_sticky_stream_shared(conn: &mut AsyncPgConnection) -> horme::Resul
     Ok(())
 }
 
-/// Read the global stream position after all earlier presence, live publication,
+/// Read the global stream position after all earlier presence, typing, live publication,
 /// sticky, device-inbox and device/signing-key writes have committed or rolled back.
 ///
 /// These streams allocate from `occur_sn_seq`. Taking their advisory locks in one
@@ -93,10 +93,11 @@ pub async fn curr_sn_after_sync_writes(
     let curr_sn =
         connect()
             .transaction::<_, crate::AppError, _>(async |conn| {
-                // Lock order: presence, live/sticky, this inbox, then keys.
+                // Lock order: presence, typing, live/sticky, this inbox, then keys.
                 // Key publishers use a shared stream lock; the short exclusive
                 // key snapshot waits for every in-flight key allocation.
                 crate::data::user::lock_presence_stream_shared(conn).await?;
+                crate::data::room::typing::lock_typing_stream_shared(conn).await?;
                 lock_sticky_stream_shared(conn).await?;
                 crate::data::user::device::lock_inbox_stream(conn, user_id, device_id).await?;
                 crate::data::user::key::lock_key_change_snapshot(conn).await?;
