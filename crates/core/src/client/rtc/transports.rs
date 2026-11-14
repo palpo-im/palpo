@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::serde::JsonObject;
 
 /// Response body for unstable MSC4143 transport discovery.
-#[derive(ToSchema, Serialize, Default)]
+#[derive(ToSchema, Serialize, Deserialize, Default)]
 pub struct RtcTransportsResBody {
     /// Transports advertised by the homeserver.
     #[salvo(schema(value_type = Object, additional_properties = true))]
@@ -19,6 +19,14 @@ impl RtcTransportsResBody {
     pub fn new(rtc_transports: Vec<RtcTransport>) -> Self {
         Self { rtc_transports }
     }
+}
+
+/// Response body for `/v1/rtc/transports` (MSC4143, pending spec publication).
+#[derive(ToSchema, Serialize, Deserialize, Default)]
+pub struct StableRtcTransportsResBody {
+    /// Transports advertised by the homeserver.
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    pub transports: Vec<RtcTransport>,
 }
 
 /// Information about a specific MatrixRTC transport.
