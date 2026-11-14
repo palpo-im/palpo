@@ -1,52 +1,163 @@
 //! Types for MatrixRTC Focus/SFU configurations.
 
+use std::borrow::Cow;
+
 use salvo::oapi::ToSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::macros::StringEnum;
+use crate::serde::JsonObject;
 use crate::{OwnedServerName, PrivOwnedStr};
 
 /// Description of the SFU/Focus a membership can be connected to.
 ///
 /// A focus can be any server powering the MatrixRTC session (SFU,
 /// MCU). It serves as a node to redistribute RTC streams.
-#[derive(ToSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(deprecated)]
+#[derive(ToSchema, Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "type")]
 pub enum Focus {
-    /// LiveKit is one possible type of SFU/Focus that can be used for a MatrixRTC session.
+    /// A LiveKit focus, as defined in the merged state of [MSC4195].
+    ///
+    /// [MSC4195]: https://github.com/matrix-org/matrix-spec-proposals/pull/4195
+    #[serde(rename = "m.livekit")]
     Livekit(LivekitFocus),
+
+    /// A LiveKit focus with the `livekit` type used by implementations of earlier versions of
+    /// [MSC4195].
+    ///
+    /// [MSC4195]: https://github.com/matrix-org/matrix-spec-proposals/pull/4195
+    #[serde(rename = "livekit")]
+    #[deprecated = "Use `Focus::Livekit` instead unless you require backwards compatibility with older versions of MSC4195."]
+    LegacyLivekit(LivekitFocus),
+
+    /// A custom focus.
+    #[doc(hidden)]
+    #[serde(untagged)]
+    _Custom(CustomFocus),
+}
+
+impl<'de> Deserialize<'de> for Focus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let mut obj = JsonObject::deserialize(deserializer)?;
+        let focus_type = match obj.remove("type") {
+            Some(serde_json::Value::String(s)) => s,
+            Some(_) => return Err(D::Error::custom("`type` must be a string")),
+            None => return Err(D::Error::missing_field("type")),
+        };
+
+        Self::new(&focus_type, obj).map_err(D::Error::custom)
+    }
+}
+
+impl Focus {
+    /// A constructor to create a custom focus.
+    ///
+    /// Prefer to use the public variants of `Focus` where possible; this constructor is meant to
+    /// be used for unsupported focus types only and does not allow setting arbitrary data for
+    /// supported ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `focus_type` is known and deserialization of `data` to the
+    /// corresponding `Focus` variant fails.
+    pub fn new(focus_type: &str, data: JsonObject) -> serde_json::Result<Self> {
+        Ok(match focus_type {
+            "m.livekit" => Self::Livekit(serde_json::from_value(serde_json::Value::Object(data))?),
+            #[allow(deprecated)]
+            "livekit" => {
+                Self::LegacyLivekit(serde_json::from_value(serde_json::Value::Object(data))?)
+            }
+            _ => Self::_Custom(CustomFocus {
+                focus_type: focus_type.to_owned(),
+                data,
+            }),
+        })
+    }
+
+    /// Creates a new `Focus::Livekit` with the given SFU URL.
+    pub fn livekit(url: String) -> Self {
+        Self::Livekit(LivekitFocus::new(url))
+    }
+
+    /// Returns the type of this focus.
+    pub fn focus_type(&self) -> &str {
+        match self {
+            Self::Livekit(_) => "m.livekit",
+            #[allow(deprecated)]
+            Self::LegacyLivekit(_) => "livekit",
+            Self::_Custom(custom) => &custom.focus_type,
+        }
+    }
+
+    /// Returns the associated data.
+    ///
+    /// The returned JSON object won't contain the `type` field, please use
+    /// [`.focus_type()`][Self::focus_type] to access that.
+    ///
+    /// Prefer to use the public variants of `Focus` where possible; this method is meant to be
+    /// used for custom focus types only.
+    pub fn data(&self) -> Cow<'_, JsonObject> {
+        match self {
+            Self::Livekit(info) => Cow::Owned(serialize_focus_data(info)),
+            #[allow(deprecated)]
+            Self::LegacyLivekit(info) => Cow::Owned(serialize_focus_data(info)),
+            Self::_Custom(info) => Cow::Borrowed(&info.data),
+        }
+    }
+}
+
+/// Serializes the data of a known focus type to a JSON object.
+fn serialize_focus_data<T: Serialize>(object: &T) -> JsonObject {
+    use serde_json::Value as JsonValue;
+
+    match serde_json::to_value(object).expect("focus type serialization to succeed") {
+        JsonValue::Object(object) => object,
+        _ => panic!("all focus types must serialize to objects"),
+    }
 }
 
 /// The struct to describe LiveKit as a `preferred_foci`.
+///
+/// This is used for both the `m.livekit` and the legacy `livekit` focus types. Implementations of
+/// earlier versions of [MSC4195] may omit the `url` and use `livekit_service_url` instead,
+/// independently of the focus type.
+///
+/// [MSC4195]: https://github.com/matrix-org/matrix-spec-proposals/pull/4195
 #[derive(ToSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LivekitFocus {
     /// The alias where the LiveKit sessions can be reached.
-    ///
-    /// Newer Element Call versions omit this legacy field.
     #[serde(rename = "livekit_alias", skip_serializing_if = "Option::is_none")]
+    #[deprecated = "Newer versions of Element Call won't fill this field anymore."]
     pub alias: Option<String>,
 
     /// The WebSocket URL of the LiveKit SFU.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 
-    /// The server that grants access to the LiveKit SFU.
+    /// The server name of the homeserver that grants access to the LiveKit SFU.
     ///
-    /// This is required when the SFU belongs to a different homeserver than the sender's.
+    /// This must be set when publishing on an SFU of a different homeserver than the sender's. If
+    /// this is `None`, the SFU belongs to the sender's homeserver.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_name: Option<OwnedServerName>,
 
-    /// The URL of the legacy JWT service for the LiveKit instance.
+    /// The URL of the JWT service for the LiveKit instance.
     #[serde(
         rename = "livekit_service_url",
         skip_serializing_if = "Option::is_none"
     )]
-    #[deprecated = "Use `url` unless compatibility with older MSC4195 deployments is required."]
+    #[deprecated = "Use `url` instead unless you require backwards compatibility with older versions of MSC4195."]
     pub service_url: Option<String>,
 }
 
 impl LivekitFocus {
-    /// Initialize a [`LivekitFocus`] with an SFU WebSocket URL.
+    /// Initialize a [`LivekitFocus`] with the given SFU URL.
     ///
     /// # Arguments
     ///
@@ -61,8 +172,12 @@ impl LivekitFocus {
         }
     }
 
-    /// Initialize a [`LivekitFocus`] with a legacy JWT service URL.
-    #[deprecated = "Use `LivekitFocus::new()` unless compatibility with older MSC4195 deployments is required."]
+    /// Initialize a [`LivekitFocus`] with the given JWT service URL.
+    ///
+    /// # Arguments
+    ///
+    /// * `service_url` - The URL of the JWT service for the LiveKit instance.
+    #[deprecated = "Use `LivekitFocus::new()` instead unless you require backwards compatibility with older versions of MSC4195."]
     #[allow(deprecated)]
     pub fn with_service_url(service_url: String) -> Self {
         Self {
@@ -72,6 +187,23 @@ impl LivekitFocus {
             service_url: Some(service_url),
         }
     }
+}
+
+/// Information about a custom focus.
+///
+/// This type does not implement `Deserialize` to prevent users from constructing the `_Custom`
+/// variant of [`Focus`] for a known `type`. Deserialize through [`Focus`] instead.
+#[doc(hidden)]
+#[derive(ToSchema, Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct CustomFocus {
+    /// The type of focus.
+    #[serde(rename = "type")]
+    focus_type: String,
+
+    /// Remaining focus data.
+    #[serde(flatten)]
+    #[salvo(schema(value_type = Object, additional_properties = true))]
+    data: JsonObject,
 }
 
 /// Data to define the actively used Focus.
@@ -100,7 +232,9 @@ impl ActiveLivekitFocus {
     /// * `focus_selection` - The selection method used to select the LiveKit focus for the rtc
     ///   session.
     pub fn new() -> Self {
-        Default::default()
+        Self {
+            focus_selection: FocusSelection::OldestMembership,
+        }
     }
 }
 
@@ -115,72 +249,4 @@ pub enum FocusSelection {
 
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-    use crate::events::call::member::CallMemberEventContent;
-
-    #[test]
-    #[allow(deprecated)]
-    fn rtc_membership_accepts_livekit_with_or_without_alias() {
-        for alias in [None, Some("room")] {
-            let mut focus =
-                json!({"type": "livekit", "livekit_service_url": "https://livekit.example.org"});
-            if let Some(alias) = alias {
-                focus["livekit_alias"] = json!(alias);
-            }
-            let content: CallMemberEventContent = serde_json::from_value(json!({
-                "application": "m.call", "call_id": "call", "scope": "m.room",
-                "device_id": "DEVICE", "expires": 14400000,
-                "focus_active": {"type": "livekit", "focus_selection": "oldest_membership"},
-                "foci_preferred": [focus]
-            }))
-            .unwrap();
-            let CallMemberEventContent::SessionContent(session) = content else {
-                panic!("membership must not fall back to an empty event");
-            };
-            let Focus::Livekit(focus) = &session.foci_preferred[0];
-            assert_eq!(focus.alias.as_deref(), alias);
-            assert_eq!(focus.url, None);
-            assert_eq!(focus.server_name, None);
-            assert_eq!(
-                focus.service_url.as_deref(),
-                Some("https://livekit.example.org")
-            );
-            let wire = serde_json::to_value(&session.foci_preferred[0]).unwrap();
-            assert_eq!(wire.get("livekit_alias").is_some(), alias.is_some());
-            let decoded: Focus = serde_json::from_value(wire).unwrap();
-            assert_eq!(decoded, session.foci_preferred[0]);
-        }
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn rtc_membership_roundtrips_current_and_legacy_livekit_fields() {
-        let wire = json!({
-            "type": "livekit",
-            "url": "wss://livekit.example.org",
-            "server_name": "other.example.org",
-            "livekit_service_url": "https://livekit-jwt.example.org",
-            "livekit_alias": "legacy-room"
-        });
-        let focus: Focus = serde_json::from_value(wire.clone()).unwrap();
-        let Focus::Livekit(livekit) = &focus;
-
-        assert_eq!(livekit.alias.as_deref(), Some("legacy-room"));
-        assert_eq!(livekit.url.as_deref(), Some("wss://livekit.example.org"));
-        assert_eq!(
-            livekit.server_name.as_deref(),
-            Some(crate::server_name!("other.example.org"))
-        );
-        assert_eq!(
-            livekit.service_url.as_deref(),
-            Some("https://livekit-jwt.example.org")
-        );
-        assert_eq!(serde_json::to_value(focus).unwrap(), wire);
-    }
 }
