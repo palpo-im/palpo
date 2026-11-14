@@ -77,6 +77,11 @@ fn parse_query(body: Value) -> Result<QueryProfilesReqBody, MatrixError> {
     if query.users.is_empty() || query.users.len() > 100 {
         return Err(MatrixError::bad_json("users must contain 1 to 100 IDs"));
     }
+    // The shared identifier parser permits compatibility localparts. NUL is
+    // forbidden even in historical IDs and cannot be passed to PostgreSQL text.
+    if query.users.iter().any(|id| id.as_str().contains('\0')) {
+        return Err(MatrixError::bad_json("User IDs must not contain NUL"));
+    }
     if let Some(fields) = &query.fields
         && (fields.is_empty()
             || fields.len() > 30

@@ -280,6 +280,7 @@ async fn query_http(enabled: bool, rate: bool) {
         json!({"users":null}),
         json!({"users":[]}),
         json!({"users":["invalid"]}),
+        json!({"users":["@invalid\u{0000}:profiles.example"]}),
         json!({"users":[true]}),
         json!({"users":vec![alice.clone();101]}),
         json!({"users":[alice],"fields":[]}),
