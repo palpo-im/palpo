@@ -38,6 +38,16 @@ pub async fn add_typing(
     Ok(())
 }
 
+/// When a remote user's typing notice ends. Federation EDUs carry no timeout,
+/// so `federation_timeout_ms` (config `typing.federation_timeout`, already in
+/// milliseconds) is added to `now_ms` as is.
+pub fn federation_deadline(now_ms: u64, federation_timeout_ms: u64) -> u64 {
+    // Stored as i64 downstream (add_typing): clamp so the cast never wraps.
+    now_ms
+        .saturating_add(federation_timeout_ms)
+        .min(i64::MAX as u64)
+}
+
 /// Removes a user from typing before the timeout is reached.
 /// Instead of deleting the row, it is marked stopped and occur_sn is bumped
 /// so that sync picks up the "typing stopped" change before cleanup.
@@ -270,3 +280,20 @@ mod database_tests {
 #[cfg(test)]
 #[path = "typing_publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(test)]
+mod federation_deadline_tests {
+    use super::federation_deadline;
+
+    #[test]
+    fn remote_typing_ends_after_the_configured_milliseconds() {
+        // Default typing.federation_timeout is 30_000 ms: the notice must end
+        // 30 s later, not 30_000 s (the old code multiplied by 1000 again).
+        assert_eq!(federation_deadline(1_000, 30_000), 31_000);
+    }
+
+    #[test]
+    fn deadline_clamps_to_what_add_typing_can_store() {
+        assert_eq!(federation_deadline(u64::MAX - 1, 30_000), i64::MAX as u64);
+    }
+}
