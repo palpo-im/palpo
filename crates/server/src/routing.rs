@@ -229,6 +229,7 @@ fn well_known_client(res: &mut Response) -> JsonResult<ClientResBody> {
     let mut body = ClientResBody::new(HomeServerInfo {
         base_url: client_url.clone(),
     });
+    body.rtc_foci = conf.well_known.rtc_foci.clone();
 
     // Advertise OIDC issuer (MSC3861) — prefer delegated_auth, fall back to oidc.mas_issuer
     if let Some(da) = conf.enabled_delegated_auth() {
