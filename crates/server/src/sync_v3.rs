@@ -129,6 +129,8 @@ pub async fn sync_events(
             let mut response = SyncEventsResBody::new(since_str.to_owned());
             // Key uploads and claims need not allocate a stream position. Even
             // an idle incremental sync must report their current usage state.
+            response.device_one_time_keys_count =
+                data::user::count_one_time_keys(sender_id, device_id).await?;
             response.device_unused_fallback_key_types =
                 Some(data::user::key::unused_fallback_key_types(sender_id, device_id).await?);
             return Ok(response);
@@ -449,11 +451,7 @@ pub async fn sync_events(
         presence,
         account_data,
         device_lists,
-        device_one_time_keys_count: {
-            data::user::count_one_time_keys(sender_id, device_id)
-                .await
-                .unwrap_or_default()
-        },
+        device_one_time_keys_count: data::user::count_one_time_keys(sender_id, device_id).await?,
         to_device,
         device_unused_fallback_key_types: Some(
             data::user::key::unused_fallback_key_types(sender_id, device_id).await?,
