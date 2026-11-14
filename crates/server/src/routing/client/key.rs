@@ -168,9 +168,24 @@ mod fallback_tests {
         (response.status_code, response.take_json().await.unwrap())
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
-    async fn database_normal_fallback_upload_claim_and_sync_lifecycle() {
+    fn database_normal_fallback_upload_claim_and_sync_lifecycle() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(normal_fallback_upload_claim_and_sync_lifecycle());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn normal_fallback_upload_claim_and_sync_lifecycle() {
         crate::test_database::init();
         crate::config::CONFIG.get_or_init(|| {
             serde_json::from_value(json!({
@@ -201,7 +216,10 @@ mod fallback_tests {
         let service = Service::new(
             Router::new()
                 .hoop(crate::hoops::auth_by_access_token)
-                .push(authed_router()),
+                .push(authed_router())
+                .push(
+                    Router::with_path("sync").get(crate::routing::client::sync_v3::sync_events_v3),
+                ),
         );
         let upload = json!({"fallback_keys":{"signed_curve25519:first":{"key":"ZmFsbGJhY2s","fallback":true,"signatures":{}}},
             "one_time_keys":{"signed_curve25519:once":"b25jZQ"}});
@@ -217,7 +235,26 @@ mod fallback_tests {
             sync.device_unused_fallback_key_types,
             Some(vec![crate::core::DeviceKeyAlgorithm::SignedCurve25519])
         );
-        let idle_args = serde_json::from_value(json!({"since":sync.next_batch})).unwrap();
+        assert_eq!(
+            sync.device_one_time_keys_count
+                .get(&crate::core::DeviceKeyAlgorithm::SignedCurve25519),
+            Some(&1)
+        );
+        // Force the idle fast path under both MSC4494 configurations. The
+        // response must preserve this cursor while still reporting key state.
+        let idle_since = format!("p{}", data::curr_sn().await.unwrap() + 100);
+        let idle_args = serde_json::from_value(json!({"since":idle_since})).unwrap();
+        let mut response = TestClient::get(format!(
+            "http://localhost/sync?since={idle_since}&timeout=0"
+        ))
+        .add_header("authorization", "Bearer fallback-upload", true)
+        .send(&service)
+        .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        let body: Value = response.take_json().await.unwrap();
+        assert_eq!(body["next_batch"], idle_since);
+        assert_eq!(body["device_one_time_keys_count"]["signed_curve25519"], 1);
+
         let stream_before_claim = data::curr_sn().await.unwrap();
         let claim = json!({"one_time_keys":{user.as_str():{device.as_str():"signed_curve25519"}}});
         let (status, keys) = post(&service, "claim", claim.clone()).await;
@@ -240,6 +277,10 @@ mod fallback_tests {
         let idle_sync = crate::sync_v3::sync_events(&user, &device, &idle_args)
             .await
             .unwrap();
+        assert!(
+            idle_sync.device_one_time_keys_count.is_empty(),
+            "claimed one-time keys must disappear from idle sync counts"
+        );
         assert_eq!(
             idle_sync.device_unused_fallback_key_types,
             Some(vec![]),
@@ -297,6 +338,56 @@ mod fallback_tests {
             json!({"fallback_keys":{"signed_curve25519:a":"YQ", "signed_curve25519:b":"Yg"}});
         let (status, _) = post(&service, "upload", invalid).await;
         assert_eq!(status, Some(StatusCode::BAD_REQUEST));
+        // Uploading keys need not publish a room event: reusing the same idle
+        // cursor must report newly available keys, scoped to this device.
+        assert_eq!(
+            post(
+                &service,
+                "upload",
+                json!({
+                    "one_time_keys":{"signed_curve25519:replenished":"bmV3"}
+                })
+            )
+            .await
+            .0,
+            Some(StatusCode::OK)
+        );
+        let replenished = crate::sync_v3::sync_events(&user, &device, &idle_args)
+            .await
+            .unwrap();
+        assert_eq!(
+            replenished
+                .device_one_time_keys_count
+                .get(&crate::core::DeviceKeyAlgorithm::SignedCurve25519),
+            Some(&1)
+        );
+        let other: crate::core::OwnedDeviceId = "OTHER_DEVICE".into();
+        crate::data::user::device::create_device(&user, &other, "other-upload", None, None)
+            .await
+            .unwrap();
+        let other_sync = crate::sync_v3::sync_events(&user, &other, &idle_args)
+            .await
+            .unwrap();
+        assert!(other_sync.device_one_time_keys_count.is_empty());
+        // Storage failure must not look like a successful zero-key response.
+        use horme::RunQueryDsl;
+        diesel::sql_query("ALTER TABLE e2e_one_time_keys RENAME TO review_unavailable_otks")
+            .execute(&mut crate::data::db())
+            .await
+            .unwrap();
+        let failed_idle = crate::sync_v3::sync_events(&user, &device, &idle_args).await;
+        let failed_full = crate::sync_v3::sync_events(&user, &device, &args).await;
+        diesel::sql_query("ALTER TABLE review_unavailable_otks RENAME TO e2e_one_time_keys")
+            .execute(&mut crate::data::db())
+            .await
+            .unwrap();
+        assert!(failed_idle.is_err());
+        assert!(failed_full.is_err());
+        assert!(
+            crate::sync_v3::sync_events(&user, &device, &idle_args)
+                .await
+                .is_ok()
+        );
     }
 }
 
