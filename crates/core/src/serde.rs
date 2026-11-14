@@ -182,6 +182,42 @@ where
     deserializer.deserialize_seq(SkipInvalid(PhantomData))
 }
 
+/// Deserialize a sequence into a collection, keeping only valid items.
+///
+/// Each JSON value is consumed completely before conversion so a malformed
+/// nested item cannot leave a streaming deserializer stuck inside that item.
+pub fn ignore_invalid_sequence_items<'de, D, A, T>(deserializer: D) -> Result<A, D::Error>
+where
+    D: Deserializer<'de>,
+    A: Default + Extend<T>,
+    T: serde::de::DeserializeOwned,
+{
+    struct SkipInvalid<A, T>(PhantomData<(A, T)>);
+    impl<'de, A, T> Visitor<'de> for SkipInvalid<A, T>
+    where
+        A: Default + Extend<T>,
+        T: serde::de::DeserializeOwned,
+    {
+        type Value = A;
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a sequence with possibly invalid items")
+        }
+        fn visit_seq<S>(self, mut seq: S) -> Result<A, S::Error>
+        where
+            S: SeqAccess<'de>,
+        {
+            let mut items = A::default();
+            while let Some(value) = seq.next_element::<serde_json::Value>()? {
+                if let Ok(item) = serde_json::from_value(value) {
+                    items.extend(Some(item));
+                }
+            }
+            Ok(items)
+        }
+    }
+    deserializer.deserialize_seq(SkipInvalid::<A, T>(PhantomData))
+}
+
 /// Deserialize a `RawJson<T>` and reject any value whose top-level JSON shape is not an object.
 ///
 /// Use as `#[serde(deserialize_with = "crate::serde::deserialize_raw_object")]` wherever the
