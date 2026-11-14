@@ -257,7 +257,11 @@ pub struct Mentions {
     /// The list of mentioned users.
     ///
     /// Defaults to an empty `BTreeSet`.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeSet::is_empty",
+        deserialize_with = "crate::serde::ignore_invalid_sequence_items"
+    )]
     pub user_ids: BTreeSet<OwnedUserId>,
 
     /// Whether the whole room is mentioned.
