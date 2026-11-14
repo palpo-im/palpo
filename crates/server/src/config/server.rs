@@ -480,9 +480,16 @@ pub struct ServerConfig {
     #[serde(default = "default_login_token_ttl")]
     pub login_token_ttl: u64,
 
+    /// Access token lifetime in milliseconds for refresh-enabled sessions.
+    /// default: 60000
+    #[serde(default = "default_access_token_ttl")]
+    pub access_token_ttl: u64,
+
+    /// Refresh credential idle lifetime in milliseconds.
     #[serde(default = "default_refresh_token_ttl")]
     pub refresh_token_ttl: u64,
 
+    /// Absolute refresh-enabled session lifetime in milliseconds, preserved on rotation.
     #[serde(default = "default_session_ttl")]
     pub session_ttl: u64,
 
@@ -914,6 +921,19 @@ impl ServerConfig {
     }
 
     pub fn check(&self) -> AppResult<()> {
+        if self.access_token_ttl == 0 || self.refresh_token_ttl == 0 || self.session_ttl == 0 {
+            return Err(AppError::internal(
+                "Session token lifetimes must be positive",
+            ));
+        }
+        if self.media.max_concurrent_remote_downloads == 0
+            || self.media.max_concurrent_remote_downloads > tokio::sync::Semaphore::MAX_PERMITS
+        {
+            return Err(AppError::internal(
+                "Invalid remote download concurrency limit",
+            ));
+        }
+
         super::validate_restricted_outbound_proxy(self.proxy.as_ref())?;
         #[cfg(feature = "unstable-msc1763")]
         self.retention.validate().map_err(AppError::internal)?;
@@ -1488,6 +1508,10 @@ fn default_rc_user_directory() -> RateLimitConfig {
         per_second: 0.016,
         burst: 200,
     }
+}
+
+fn default_access_token_ttl() -> u64 {
+    60_000
 }
 
 #[cfg(test)]
