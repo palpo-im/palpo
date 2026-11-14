@@ -235,6 +235,10 @@
 #
 # require_auth_for_profile_requests = false
 
+# Enable authenticated, rate-limited MSC4536 batch profile queries.
+# Returns known active local profiles only, without federation lookups.
+# enable_batch_profile_queries = false
+
 # Enables registration. If set to false, no users can register on this
 # server.
 #

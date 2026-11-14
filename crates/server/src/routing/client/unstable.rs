@@ -8,6 +8,7 @@ pub(super) fn router() -> Router {
     let authed = Router::new()
         .hoop(hoops::auth_by_access_token)
         .hoop(hoops::limit_rate)
+        .push(super::profile_query::router())
         .push(super::delayed_event::authed_router());
     #[cfg(feature = "unstable-msc1763")]
     let authed = authed.push(super::retention::router());

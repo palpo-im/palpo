@@ -213,6 +213,24 @@ pub async fn get_global_profiles(user_ids: &[OwnedUserId]) -> DataResult<Vec<DbP
         .map_err(Into::into)
 }
 
+/// Active local global profiles for an MSC4536 query, in one database snapshot.
+/// Room-specific profiles and remote membership caches must not become public profiles.
+pub async fn get_local_global_profiles(user_ids: &[OwnedUserId]) -> DataResult<Vec<DbProfile>> {
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    user_profiles::table
+        .inner_join(users::table.on(users::id.eq(user_profiles::user_id)))
+        .filter(user_profiles::user_id.eq_any(user_ids))
+        .filter(user_profiles::room_id.is_null())
+        .filter(users::is_local.eq(true))
+        .filter(users::deactivated_at.is_null())
+        .select(user_profiles::all_columns)
+        .load::<DbProfile>(&mut crate::db())
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn profile_fields(user_id: &UserId) -> DataResult<JsonObject> {
     let fields = user_profiles::table
         .filter(user_profiles::user_id.eq(user_id))
