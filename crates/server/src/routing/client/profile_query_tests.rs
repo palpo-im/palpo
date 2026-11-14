@@ -104,7 +104,15 @@ async fn query_http(enabled: bool, rate: bool) {
         .unwrap();
     let alice = user("@alice:profiles.example", "profile-a", true).await;
     let bob = user("@bob:profiles.example", "profile-b", true).await;
-    data::user::ensure_profile_exists(&alice).await.unwrap();
+    data::user::create_profile(&data::user::NewDbProfile {
+        user_id: alice.clone(),
+        room_id: None,
+        display_name: None,
+        avatar_url: Some("mxc://profiles.example/alice".try_into().unwrap()),
+        blurhash: None,
+    })
+    .await
+    .unwrap();
     data::user::set_display_name(&alice, "Alice").await.unwrap();
     data::user::set_profile_field(
         &alice,
@@ -168,7 +176,7 @@ async fn query_http(enabled: bool, rate: bool) {
     }
     assert_eq!(
         first[alice.as_str()],
-        json!({"displayname":"Alice", "org.example.status":{"emoji":"💬","text":"busy"},"org.example.vector":[1,true,null]})
+        json!({"displayname":"Alice","avatar_url":"mxc://profiles.example/alice", "org.example.status":{"emoji":"💬","text":"busy"},"org.example.vector":[1,true,null]})
     );
     assert!(first.get("profiles").is_none());
 
@@ -224,7 +232,7 @@ async fn query_http(enabled: bool, rate: bool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         fields[alice.as_str()],
-        json!({"displayname":"Alice","org.example.status":{"emoji":"💬","text":"busy"}})
+        json!({"displayname":"Alice","avatar_url":"mxc://profiles.example/alice","org.example.status":{"emoji":"💬","text":"busy"}})
     );
     assert_eq!(
         post(&service, json!({"users":[alice],"fields":["unknown"]}))
