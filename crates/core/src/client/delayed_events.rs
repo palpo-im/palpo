@@ -150,7 +150,8 @@ pub struct SendDelayedEventReqArgs {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "ts")]
     pub timestamp: Option<UnixMillis>,
 
-    /// The duration of sticky delivery guarantees, starting when the event is sent.
+    /// Legacy query parameter for sticky delivery. New clients should send the
+    /// duration in the JSON body; conflicting body/query values are rejected.
     #[cfg(feature = "unstable-msc4354")]
     #[salvo(parameter(parameter_in = Query))]
     #[serde(
@@ -191,6 +192,15 @@ mod sticky_tests {
 /// Request body for the `send_delayed_event` endpoint.
 #[derive(ToSchema, Serialize, Deserialize, Debug)]
 pub struct SendDelayedEventReqBody {
+    /// Sticky delivery duration starting when the event is sent (MSC4354).
+    #[cfg(feature = "unstable-msc4354")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "org.matrix.msc4354.sticky_duration_ms"
+    )]
+    pub sticky_duration_ms: Option<crate::events::sticky::StickyDurationMs>,
+
     /// The duration that the server should wait before sending this event.
     #[serde(rename = "delay_ms", with = "crate::serde::duration::ms")]
     #[salvo(schema(value_type = u64))]
@@ -277,6 +287,32 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[cfg(feature = "unstable-msc4354")]
+    #[test]
+    fn delayed_sticky_body_validates_duration_and_roundtrips() {
+        for value in [0, 123456, 3600000] {
+            let wire = json!({"delay_ms":1000, "content":{"body":"test"},
+                "org.matrix.msc4354.sticky_duration_ms":value});
+            let body: SendDelayedEventReqBody = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(body.sticky_duration_ms.unwrap().get(), value);
+            assert_eq!(serde_json::to_value(body).unwrap(), wire);
+        }
+        for value in [
+            json!(-1),
+            json!(3600001),
+            json!(1.5),
+            json!("60000"),
+            json!(true),
+        ] {
+            assert!(
+                serde_json::from_value::<SendDelayedEventReqBody>(json!({
+                    "delay_ms":1000, "content":{}, "org.matrix.msc4354.sticky_duration_ms":value
+                }))
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn deserialize_send_delayed_event_req_body() {
