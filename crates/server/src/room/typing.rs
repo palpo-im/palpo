@@ -27,8 +27,7 @@ pub async fn add_typing(
     broadcast: bool,
 ) -> AppResult<()> {
     let timeout = timeout.min(typing_deadline_cap(UnixMillis::now().get()));
-    let event_sn = data::next_sn().await?;
-    data::room::typing::upsert_typing(room_id, user_id, timeout as i64, event_sn).await?;
+    data::room::typing::upsert_typing(room_id, user_id, timeout as i64).await?;
 
     // Notify same-instance watchers immediately
     let _ = TYPING_UPDATE_SENDER.send(room_id.to_owned());
@@ -43,9 +42,7 @@ pub async fn add_typing(
 /// Instead of deleting the row, it is marked stopped and occur_sn is bumped
 /// so that sync picks up the "typing stopped" change before cleanup.
 pub async fn remove_typing(user_id: &UserId, room_id: &RoomId, broadcast: bool) -> AppResult<()> {
-    let event_sn = data::next_sn().await?;
-    data::room::typing::stop_typing(room_id, user_id, event_sn, UnixMillis::now().get() as i64)
-        .await?;
+    data::room::typing::stop_typing(room_id, user_id, UnixMillis::now().get() as i64).await?;
 
     // Notify same-instance watchers immediately
     let _ = TYPING_UPDATE_SENDER.send(room_id.to_owned());
@@ -193,8 +190,7 @@ mod database_tests {
         let room: OwnedRoomId = "!typing-expiry:example.org".try_into().unwrap();
         let user: OwnedUserId = "@typer:example.org".try_into().unwrap();
         let now = UnixMillis::now().get() as i64;
-        let sn = data::next_sn().await.unwrap();
-        data::room::typing::upsert_typing(&room, &user, now - 1, sn)
+        let sn = data::room::typing::upsert_typing(&room, &user, now - 1)
             .await
             .unwrap();
         publish_expired_typings().await.unwrap();
@@ -230,16 +226,10 @@ mod database_tests {
         let fresh: OwnedUserId = "@fresh:example.org".try_into().unwrap();
         let now = UnixMillis::now().get();
         let hours_ahead = (now + 8 * 3_600_000) as i64;
-        data::room::typing::upsert_typing(
-            &room,
-            &stale,
-            hours_ahead,
-            data::next_sn().await.unwrap(),
-        )
-        .await
-        .unwrap();
-        let fresh_sn = data::next_sn().await.unwrap();
-        data::room::typing::upsert_typing(&room, &fresh, (now + 10_000) as i64, fresh_sn)
+        data::room::typing::upsert_typing(&room, &stale, hours_ahead)
+            .await
+            .unwrap();
+        let fresh_sn = data::room::typing::upsert_typing(&room, &fresh, (now + 10_000) as i64)
             .await
             .unwrap();
 
@@ -276,3 +266,7 @@ mod database_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "typing_publication_tests.rs"]
+mod publication_tests;
