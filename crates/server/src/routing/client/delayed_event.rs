@@ -44,7 +44,7 @@ async fn send_delayed_event(
         &args.event_type,
         &args.txn_id,
         args.timestamp,
-        args.sticky_duration_ms,
+        sticky_duration(body.sticky_duration_ms, args.sticky_duration_ms)?,
         body.delay,
         body.state_key.clone(),
         body.content.clone(),
@@ -81,3 +81,22 @@ async fn update_delayed_event(
     crate::delayed_event::update(authed.user_id(), &args.delay_id, &args.action).await?;
     empty_ok()
 }
+
+/// Retain the historical query form while rejecting ambiguous requests.
+fn sticky_duration(
+    body: Option<crate::core::events::sticky::StickyDurationMs>,
+    query: Option<crate::core::events::sticky::StickyDurationMs>,
+) -> Result<Option<crate::core::events::sticky::StickyDurationMs>, crate::core::MatrixError> {
+    if let (Some(body), Some(query)) = (body, query)
+        && body != query
+    {
+        return Err(crate::core::MatrixError::invalid_param(
+            "Conflicting sticky durations in request body and query",
+        ));
+    }
+    Ok(body.or(query))
+}
+
+#[cfg(test)]
+#[path = "delayed_event_tests.rs"]
+mod tests;
