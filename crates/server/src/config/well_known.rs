@@ -128,7 +128,9 @@ mod tests {
     // The JWT-service form (`livekit_service_url`) is what Element Call reads today.
     #[allow(deprecated)]
     fn legacy_livekit(service_url: &str) -> RtcFocusInfo {
-        RtcFocusInfo::LiveKit(LiveKitRtcFocusInfo::with_service_url(service_url.to_owned()))
+        RtcFocusInfo::LiveKit(LiveKitRtcFocusInfo::with_service_url(
+            service_url.to_owned(),
+        ))
     }
 
     #[test]
@@ -141,10 +143,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(
-            conf.rtc_foci,
-            vec![legacy_livekit("http://127.0.0.1:8071")]
-        );
+        assert_eq!(conf.rtc_foci, vec![legacy_livekit("http://127.0.0.1:8071")]);
     }
 
     #[test]
