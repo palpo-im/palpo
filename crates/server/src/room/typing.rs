@@ -39,7 +39,9 @@ pub async fn add_typing(
 /// milliseconds) is added to `now_ms` as is.
 pub fn federation_deadline(now_ms: u64, federation_timeout_ms: u64) -> u64 {
     // Stored as i64 downstream (add_typing): clamp so the cast never wraps.
-    now_ms.saturating_add(federation_timeout_ms).min(i64::MAX as u64)
+    now_ms
+        .saturating_add(federation_timeout_ms)
+        .min(i64::MAX as u64)
 }
 
 /// Removes a user from typing before the timeout is reached.
