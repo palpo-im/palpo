@@ -19,7 +19,8 @@ HTTP(S) entries are complete origins: scheme, hostname, and optional port, with
 no callback path, credentials, query, or fragment. Matching is exact, so
 `https://chat.example.org.evil.test` and an unlisted port do not match. A
 loopback origin without an explicit port permits desktop clients' ephemeral
-loopback ports. Add only origins whose applications you trust with account access.
+loopback ports. An explicitly configured port remains fixed, including the default
+ports `:80` and `:443`. Add only origins whose applications you trust with account access.
 
 For native applications, register the full hierarchical callback URI. Its
 scheme, authority, port, and path must match exactly; trusting one callback does

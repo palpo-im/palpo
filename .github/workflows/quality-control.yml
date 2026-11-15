@@ -247,7 +247,7 @@ jobs:
             routing::client::oidc::redirect_tests::http_oidc_redirect_requires_trusted_client
             routing::client::media::thumbnail_response_tests::http_remote_thumbnail_strips_untrusted_response_headers
             sync_v5::resource_review_tests::review_sync_http_bounds_and_required_state_batch_delivery
-            sync_v5::resource_review_tests::review_sync_orphans_expire_without_database_rows_and_cache_is_bounded
+            sync_v5::resource_review_tests::review_sync_orphans_expire_without_persisted_rows_and_cache_is_bounded
             sync_v5::resource_review_tests::review_required_state_cas_rebases_and_failed_writes_do_not_ack_delivery
             sync_v5::resource_review_tests::review_old_required_state_response_cannot_settle_new_configuration
             routing::admin::user_admin::list_tests::review_admin_list_deactivation_contract_and_clamped_pagination

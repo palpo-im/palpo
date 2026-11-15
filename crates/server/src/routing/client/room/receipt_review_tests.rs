@@ -294,6 +294,17 @@ async fn run() {
     let root2 = message(&service, &room, "root-two", None).await;
     let reply1 = message(&service, &room, "reply-one", Some(&root1)).await;
     let reply2 = message(&service, &room, "reply-two", Some(&root2)).await;
+    ok(
+        &service,
+        "reader",
+        TestClient::post(endpoint(&room, &format!("receipt/m.read/{root1}")))
+            .json(&json!({"thread_id":root1})),
+    )
+    .await;
+    let remaining = actions(&reader, &room).await;
+    assert!(
+        remaining.contains(&root1) && remaining.contains(&reply1) && remaining.contains(&reply2)
+    );
     let mut indirect = Vec::new();
     for (txn, ty, relation) in [
         (
@@ -343,6 +354,13 @@ async fn run() {
         None,
         "thread roots remain main"
     );
+    refused(
+        &service,
+        "reader",
+        TestClient::post(endpoint(&room, &format!("receipt/m.read/{}", indirect[1])))
+            .json(&json!({"thread_id":reply1})),
+    )
+    .await;
     let main = message(&service, &room, "main-after-threads", None).await;
     ok(
         &service,
@@ -380,6 +398,77 @@ async fn run() {
             "thread receipt did not clear an indirect relation"
         );
     }
+
+    // Complement's TestThreadedReceipts acknowledges an annotation of a
+    // reference to the root. That is a valid receipt target even though neither
+    // event follows an m.thread edge and both retain main notification scope.
+    let tail = message(
+        &service,
+        &room,
+        "thread-before-root-reference",
+        Some(&root1),
+    )
+    .await;
+    let mut parent = root1.clone();
+    let mut main_relations = Vec::new();
+    for (txn, ty, rel_type) in [
+        ("reference-to-root", "m.room.message", "m.reference"),
+        ("annotation-to-reference", "m.reaction", "m.annotation"),
+    ] {
+        let response = ok(
+            &service,
+            "owner",
+            TestClient::put(endpoint(&room, &format!("send/{ty}/{txn}"))).json(&json!({
+                "msgtype":"m.text", "body":txn,
+                "m.relates_to":{"rel_type":rel_type,"event_id":parent,"key":"+1"}
+            })),
+        )
+        .await;
+        parent = response["event_id"].as_str().unwrap().try_into().unwrap();
+        assert_eq!(
+            event_points::table
+                .find(&parent)
+                .select(event_points::thread_id)
+                .first::<Option<OwnedEventId>>(&mut data::db())
+                .await
+                .unwrap(),
+            None,
+            "a reference to the root must retain its main notification scope"
+        );
+        main_relations.push(parent.clone());
+    }
+    refused(
+        &service,
+        "reader",
+        TestClient::post(endpoint(&room, &format!("receipt/m.read/{parent}")))
+            .json(&json!({"thread_id":root2})),
+    )
+    .await;
+    refused(
+        &service,
+        "reader",
+        TestClient::post(endpoint(&room, &format!("receipt/m.read/{parent}")))
+            .json(&json!({"thread_id":main_relations[0]})),
+    )
+    .await;
+    ok(
+        &service,
+        "reader",
+        TestClient::post(endpoint(&room, &format!("receipt/m.read/{parent}")))
+            .json(&json!({"thread_id":root1})),
+    )
+    .await;
+    let remaining = actions(&reader, &room).await;
+    assert!(!remaining.contains(&tail) && remaining.contains(&reply2));
+    assert!(main_relations.iter().all(|id| remaining.contains(id)));
+    let main = message(&service, &room, "main-after-root-reference", None).await;
+    ok(
+        &service,
+        "reader",
+        TestClient::post(endpoint(&room, &format!("receipt/m.read/{main}")))
+            .json(&json!({"thread_id":"main"})),
+    )
+    .await;
 
     let initial = ok(
         &service,

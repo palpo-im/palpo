@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use diesel::prelude::*;
+use horme::RunQueryDsl;
+
 use crate::core::UnixMillis;
 use crate::core::events::receipt::{
     ReceiptContent, ReceiptData, ReceiptEvent, ReceiptEventContent, ReceiptMap, ReceiptThread,
@@ -7,8 +10,9 @@ use crate::core::events::receipt::{
 };
 use crate::core::federation::transaction::Edu;
 use crate::core::identifiers::*;
-use crate::data::next_sn;
 use crate::data::room::DbReceipt;
+use crate::data::schema::{events, threads};
+use crate::data::{diesel_exists, next_sn};
 use crate::{AppResult, MatrixError, data, room, sending};
 
 /// Resolve the notification/receipt scope once from a bounded relation chain.
@@ -17,6 +21,20 @@ use crate::{AppResult, MatrixError, data, room, sending};
 pub(crate) async fn event_thread_root(
     event: &crate::event::PduEvent,
 ) -> AppResult<Option<OwnedEventId>> {
+    related_thread_root(event, None).await
+}
+
+/// A receipt may target a root through non-thread relationships as well. Such
+/// events retain their notification classification on the main timeline.
+async fn related_thread_root(
+    event: &crate::event::PduEvent,
+    receipt_root: Option<&EventId>,
+) -> AppResult<Option<OwnedEventId>> {
+    if receipt_root == Some(&event.event_id)
+        && is_known_thread_root(&event.room_id, &event.event_id).await?
+    {
+        return Ok(Some(event.event_id.clone()));
+    }
     let mut related = event.clone();
     let mut visited = std::collections::HashSet::new();
     for _ in 0..3 {
@@ -41,6 +59,9 @@ pub(crate) async fn event_thread_root(
         let Ok(target) = EventId::parse(target) else {
             return Ok(None);
         };
+        if receipt_root == Some(&target) && is_known_thread_root(&event.room_id, &target).await? {
+            return Ok(Some(target));
+        }
         if relation.get("rel_type").and_then(|ty| ty.as_str()) == Some("m.thread") {
             let root = match data::room::DbEvent::get_by_id(&target).await {
                 Ok(root) => root,
@@ -63,6 +84,23 @@ pub(crate) async fn event_thread_root(
         };
     }
     Ok(None)
+}
+
+/// A related intermediary is not necessarily a thread root. The thread index
+/// proves a published thread child, while the join rejects stale invalid roots.
+async fn is_known_thread_root(room_id: &RoomId, event_id: &EventId) -> AppResult<bool> {
+    diesel_exists!(
+        threads::table
+            .inner_join(events::table.on(events::id.eq(threads::event_id)))
+            .filter(threads::room_id.eq(room_id))
+            .filter(threads::event_id.eq(event_id))
+            .filter(events::room_id.eq(room_id))
+            .filter(events::is_outlier.eq(false))
+            .filter(events::soft_failed.eq(false))
+            .filter(events::is_rejected.eq(false)),
+        &mut data::db()
+    )
+    .map_err(Into::into)
 }
 
 /// Validate every target before any client receipt, marker or federation write.
@@ -114,10 +152,11 @@ pub async fn validate_client_event(
                         Err(error) => return Err(error.into()),
                     }
                 }
-                let thread_root = event_thread_root(&pdu).await?;
                 let valid = match thread {
-                    ReceiptThread::Main => thread_root.is_none(),
-                    ReceiptThread::Thread(root) => thread_root.as_deref() == Some(&**root),
+                    ReceiptThread::Main => event_thread_root(&pdu).await?.is_none(),
+                    ReceiptThread::Thread(root) => {
+                        related_thread_root(&pdu, Some(root)).await?.as_deref() == Some(&**root)
+                    }
                     _ => unreachable!(),
                 };
                 if !valid {

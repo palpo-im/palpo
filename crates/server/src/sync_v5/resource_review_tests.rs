@@ -251,7 +251,7 @@ async fn http_bounds() {
 
 #[tokio::test]
 #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
-async fn review_sync_orphans_expire_without_database_rows_and_cache_is_bounded() {
+async fn review_sync_orphans_expire_without_persisted_rows_and_cache_is_bounded() {
     init();
     let user: OwnedUserId = "@cache:sync-resource.test".try_into().unwrap();
     let device: OwnedDeviceId = "CACHE".into();
