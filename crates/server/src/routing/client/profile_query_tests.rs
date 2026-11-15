@@ -109,7 +109,7 @@ async fn query_http(enabled: bool, rate: bool) {
         user_id: alice.clone(),
         room_id: None,
         display_name: None,
-        avatar_url: Some("mxc://profiles.example/alice".try_into().unwrap()),
+        avatar_url: Some("mxc://profiles.example/alice".into()),
         blurhash: None,
     })
     .await
