@@ -8,6 +8,7 @@ pub(super) fn router() -> Router {
     let authed = Router::new()
         .hoop(hoops::auth_by_access_token)
         .hoop(hoops::limit_rate)
+        .push(super::profile_query::router())
         .push(super::delayed_event::authed_router());
     let authed = authed.push(
         Router::with_path("org.matrix.msc4143/rtc/transports").get(super::rtc::unstable_transports),

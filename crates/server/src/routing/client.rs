@@ -9,6 +9,7 @@ mod key;
 mod oidc;
 mod presence;
 mod profile;
+mod profile_query;
 mod push_rule;
 mod pusher;
 mod register;
@@ -253,6 +254,10 @@ fn supported_versions() -> JsonResult<VersionsResBody> {
         "org.palpo.registration.email_otp".to_owned(),
         config::get().registration_email.is_some(),
     );
+    if config::get().enable_batch_profile_queries {
+        body.unstable_features
+            .insert("org.matrix.msc4536".to_owned(), true);
+    }
     json_ok(body)
 }
 

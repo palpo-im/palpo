@@ -15,6 +15,8 @@ use crate::PrivOwnedStr;
 use crate::macros::StringEnum;
 
 mod profile_field_serde;
+#[cfg(feature = "unstable-msc4536")]
+pub mod query;
 pub use crate::profile::{ProfileFieldName, ProfileFieldValue};
 
 /// Controls which rooms the server should send an updated `m.room.member` event in

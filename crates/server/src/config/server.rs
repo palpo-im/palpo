@@ -369,6 +369,12 @@ pub struct ServerConfig {
     #[serde(default)]
     pub require_auth_for_profile_requests: bool,
 
+    /// Enable authenticated, rate-limited MSC4536 batch profile queries.
+    /// Returns known active local profiles only, without federation lookups.
+    /// Requests accept 1-100 users and, when specified, 1-30 profile fields.
+    #[serde(default)]
+    pub enable_batch_profile_queries: bool,
+
     /// Enables registration. If set to false, no users can register on this
     /// server.
     ///
