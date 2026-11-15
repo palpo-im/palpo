@@ -281,15 +281,10 @@ pub async fn add_key(
     user_id: &UserId,
     version: i64,
     room_id: &RoomId,
-    session_id: &String,
+    session_id: &str,
     key_data: &KeyBackupData,
 ) -> DataResult<()> {
-    store_keys(
-        user_id,
-        version,
-        &[(room_id, session_id.as_str(), key_data)],
-    )
-    .await?;
+    store_keys(user_id, version, &[(room_id, session_id, key_data)]).await?;
     Ok(())
 }
 
@@ -485,7 +480,7 @@ pub async fn delete_room_key(
     user_id: &UserId,
     version: i64,
     room_id: &RoomId,
-    session_id: &String,
+    session_id: &str,
 ) -> DataResult<()> {
     delete_keys(user_id, version, Some(room_id), Some(session_id)).await?;
     Ok(())

@@ -467,7 +467,7 @@ mod tests {
             "session_data":{"ciphertext":"fixture-ciphertext","ephemeral":"fixture-ephemeral","mac":"fixture-mac"}
         })).unwrap();
         for session in ["first-session", "second-session"] {
-            key_backup::add_key(&alice, backup.version, room, &session.to_owned(), &data)
+            key_backup::add_key(&alice, backup.version, room, session, &data)
                 .await
                 .unwrap();
         }
@@ -475,7 +475,7 @@ mod tests {
             &alice,
             backup.version,
             crate::core::room_id!("!other-backup:example.test"),
-            &"other-room-session".to_owned(),
+            "other-room-session",
             &data,
         )
         .await
