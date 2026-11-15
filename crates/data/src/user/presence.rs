@@ -157,9 +157,9 @@ pub async fn lock_presence_stream_shared(conn: &mut AsyncPgConnection) -> DataRe
     Ok(())
 }
 
-/// Capture after presence, typing, optional device inbox and key-change publication.
-/// Lock order is presence -> typing -> inbox -> keys, matching classic sync's additional
-/// live/sticky lock and the profile-enabled sliding-sync capture.
+/// Capture after presence, typing, optional device inbox, key-change and account-data publication.
+/// Lock order is presence -> typing -> inbox -> keys -> account data, matching classic sync's
+/// additional live/sticky lock and the profile-enabled sliding-sync capture.
 pub async fn curr_sn_after_presence_writes(
     device: Option<(&UserId, &DeviceId)>,
 ) -> DataResult<i64> {
@@ -171,6 +171,9 @@ pub async fn curr_sn_after_presence_writes(
                 super::device::lock_inbox_stream(conn, user, device).await?;
             }
             super::key::lock_key_change_snapshot(conn).await?;
+            if let Some((user, _)) = device {
+                super::lock_account_data_snapshot(conn, user).await?;
+            }
             Ok(
                 diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT last_value FROM occur_sn_seq",

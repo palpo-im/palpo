@@ -311,7 +311,7 @@ async fn get_state(
     depot: &mut Depot,
 ) -> JsonResult<RoomStateResBody> {
     let origin = depot.origin()?;
-    crate::federation::access_check(origin, &args.room_id, None).await?;
+    super::event::check_room_event_access(origin, &args.room_id, &args.event_id).await?;
 
     let state_hash = state::get_pdu_frame_id(&args.event_id).await?;
 

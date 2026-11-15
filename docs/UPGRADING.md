@@ -1,5 +1,24 @@
 # Upgrading Palpo
 
+## Commit safe account data and key backups
+
+Stop old writers before deploying this version, then upgrade all nodes that issue
+classic or sliding sync cursors before resuming traffic. Account data writers now
+hold a per-user publication lock until commit; sync snapshots wait for that lock
+before advancing their cursor. Old writers and readers do not participate in this
+coordination. This change adds no database migration and does not reconstruct
+updates skipped by previously issued cursors. Affected clients need a fresh sync.
+
+Key backup writes now compare verification, message index and forwarding count
+atomically, and advance the backup etag in the same transaction as a content change.
+Old writers must remain stopped because they can still overwrite better keys and
+change backup contents without updating the etag. Existing keys remain readable;
+this fix cannot recover higher-quality backups that were already overwritten.
+
+Non-success federation responses are limited to 64 KiB before parsing, with at
+most 2 KiB of their body logged. Oversized responses retain their HTTP status but
+use a generic error instead of forwarding the remote error body.
+
 ## Security review: identity bindings, receipts and refresh sessions
 
 Private read receipts are now visible only to their sender in both sync APIs.

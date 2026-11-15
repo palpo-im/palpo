@@ -80,7 +80,8 @@ async fn lock_sticky_stream_shared(conn: &mut AsyncPgConnection) -> horme::Resul
 }
 
 /// Read the global stream position after all earlier presence, typing, live publication,
-/// sticky, device-inbox and device/signing-key writes have committed or rolled back.
+/// sticky, device-inbox, device/signing-key and this user's account-data writes commit or roll
+/// back.
 ///
 /// These streams allocate from `occur_sn_seq`. Taking their advisory locks in one
 /// transaction is essential: two separate snapshots could let the second one observe a
@@ -93,7 +94,7 @@ pub async fn curr_sn_after_sync_writes(
     let curr_sn =
         connect()
             .transaction::<_, crate::AppError, _>(async |conn| {
-                // Lock order: presence, typing, live/sticky, this inbox, then keys.
+                // Lock order: presence, typing, live/sticky, this inbox, keys, account data.
                 // Key publishers use a shared stream lock; the short exclusive
                 // key snapshot waits for every in-flight key allocation.
                 crate::data::user::lock_presence_stream_shared(conn).await?;
@@ -101,6 +102,7 @@ pub async fn curr_sn_after_sync_writes(
                 lock_sticky_stream_shared(conn).await?;
                 crate::data::user::device::lock_inbox_stream(conn, user_id, device_id).await?;
                 crate::data::user::key::lock_key_change_snapshot(conn).await?;
+                crate::data::user::lock_account_data_snapshot(conn, user_id).await?;
                 Ok(diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT last_value FROM occur_sn_seq",
                 )

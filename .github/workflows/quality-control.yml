@@ -190,6 +190,11 @@ jobs:
           # Configuration and pools are process-global. Give each exact case
           # its own process and empty database in both supported feature modes.
           cases=(
+            room::auth_chain::federation_access_tests::review_federation_event_reads_bind_rooms_before_auth_cache
+            sync_v3::account_data_publication_tests::review_account_data_publication_fences_sync_and_releases_failures
+            federation::error_response_tests::review_federation_error_transport_is_bounded
+            routing::client::room_key::mutation_tests::review_key_backup_mutations_are_atomic_and_protocol_compatible
+            routing::client::room::event::context_filter_tests::review_context_filters_timeline_and_state_without_filtering_anchor
             routing::client::rtc::tests::review_rtc_discovery_current_legacy_and_custom
             routing::client::rtc::tests::review_rtc_discovery_disabled
             routing::client::rtc::tests::review_rtc_discovery_empty
@@ -247,7 +252,7 @@ jobs:
             cargo test --locked -p palpo --lib "${features[@]}" --no-run
             # These resource lifecycle cases need no database and must also run
             # with default features (the workspace suite uses all features).
-            for module in media::remote::download_budget_tests:: media::preview::resource_tests::review_preview_ hoops::rate_limit_tests::review_rate_limit_ readiness::tests::review_readiness_; do
+            for module in federation::error_response_tests::review_federation_error_ media::remote::download_budget_tests:: media::preview::resource_tests::review_preview_ hoops::rate_limit_tests::review_rate_limit_ readiness::tests::review_readiness_; do
               cargo test --locked -p palpo --lib "${features[@]}" "$module"
             done
             index=0

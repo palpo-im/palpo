@@ -212,6 +212,9 @@ async fn load_pdus_with_publication_bound(
             if let Some(senders) = &filter.senders {
                 query = query.filter(events::sender_id.eq_any(senders));
             }
+            if !filter.not_senders.is_empty() {
+                query = query.filter(events::sender_id.ne_all(&filter.not_senders));
+            }
             if let Some(types) = &filter.types {
                 query = query.filter(
                     diesel::dsl::sql::<diesel::sql_types::Bool>("events.ty LIKE ANY(")
