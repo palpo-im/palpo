@@ -35,7 +35,7 @@ static ALLOWED_ATTRIBUTES_SPAN_STRICT: Set<&str> =
     phf_set! { "data-mx-bg-color", "data-mx-color", "data-mx-spoiler", "data-mx-maths" };
 static ALLOWED_ATTRIBUTES_A_STRICT: Set<&str> = phf_set! { "target", "href" };
 static ALLOWED_ATTRIBUTES_IMG_STRICT: Set<&str> =
-    phf_set! { "width", "height", "alt", "title", "src" };
+    phf_set! { "width", "height", "alt", "title", "src", "data-mx-emoticon" };
 static ALLOWED_ATTRIBUTES_OL_STRICT: Set<&str> = phf_set! { "start" };
 static ALLOWED_ATTRIBUTES_CODE_STRICT: Set<&str> = phf_set! { "class" };
 static ALLOWED_ATTRIBUTES_DIV_STRICT: Set<&str> = phf_set! { "data-mx-maths" };
@@ -323,7 +323,7 @@ impl SanitizerConfig {
                         && compat_mode_attr_schemes.is_none()
                     {
                         // We don't check schemes for this attribute.
-                        return NodeAction::None;
+                        continue;
                     }
 
                     let mut allowed_schemes = list_attr_schemes

@@ -190,6 +190,9 @@ jobs:
           # Configuration and pools are process-global. Give each exact case
           # its own process and empty database in both supported feature modes.
           cases=(
+            routing::client::rtc::tests::review_rtc_discovery_current_legacy_and_custom
+            routing::client::rtc::tests::review_rtc_discovery_disabled
+            routing::client::rtc::tests::review_rtc_discovery_empty
             routing::client::delayed_event::tests::review_delayed_sticky_body_reaches_storage_and_delivery
             routing::client::oidc::tests::review_security_receipts_sessions_and_oidc_bindings
             sync_v3::resource_review_tests::review_live_promotion_and_purge_share_fence_and_atomic_tips
