@@ -50,14 +50,20 @@ where
     let starting_events = events::table
         .filter(events::id.eq_any(starting_event_ids.clone()))
         .filter(events::sn.is_not_null())
-        .select((events::id, events::sn))
-        .load::<(OwnedEventId, Seqnum)>(&mut crate::data::db())
+        .select((events::id, events::sn, events::room_id))
+        .load::<(OwnedEventId, Seqnum, OwnedRoomId)>(&mut crate::data::db())
         .await?
         .into_iter()
         .collect::<Vec<_>>();
 
     let mut buckets = [BUCKET; NUM_BUCKETS];
-    for (event_id, event_sn) in &starting_events {
+    for (event_id, event_sn, event_room_id) in &starting_events {
+        // Cached chains are indexed by globally unique event sequence numbers.
+        // Validate the caller's room before consulting either cache, just as
+        // the uncached traversal validates every event it follows.
+        if event_room_id != room_id {
+            return Err(MatrixError::forbidden("auth event for incorrect room", None).into());
+        }
         let index = event_sn % NUM_BUCKETS as i64;
         buckets[index as usize].insert((*event_sn, event_id));
     }
@@ -212,3 +218,7 @@ pub async fn cache_auth_chain(cache_key: Vec<Seqnum>, chain_sns: &[Seqnum]) -> A
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "auth_chain/federation_access_tests.rs"]
+mod federation_access_tests;

@@ -12,6 +12,41 @@ use crate::core::serde::{JsonValue, RawJson, json};
 use crate::core::{Seqnum, UnixMillis};
 use crate::schema::*;
 
+const ACCOUNT_DATA_STREAM_LOCK_NAMESPACE: i64 = 0x50414c41434354;
+
+/// Wait for this user's account-data allocations to commit before capturing a sync cursor.
+///
+/// Writers hold the shared form from before `nextval` until commit or rollback. Readers
+/// take this exclusive form after the other sync stream locks (presence, typing,
+/// live/profile, inbox, keys), and release every lock before reading invite scopes or
+/// account-data payloads. All instances sharing a database must use this fence; an old
+/// writer does not participate and must be stopped during a coordinated upgrade.
+pub async fn lock_account_data_snapshot(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+) -> DataResult<()> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+        .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+        .bind::<diesel::sql_types::BigInt, _>(ACCOUNT_DATA_STREAM_LOCK_NAMESPACE)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+async fn lock_account_data_publication(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+) -> DataResult<()> {
+    // Different account-data keys can publish concurrently. The exclusive snapshot
+    // only waits for this user's in-flight allocations, including on another node.
+    diesel::sql_query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, $2))")
+        .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+        .bind::<diesel::sql_types::BigInt, _>(ACCOUNT_DATA_STREAM_LOCK_NAMESPACE)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 #[derive(Identifiable, Queryable, Debug, Clone)]
 #[diesel(table_name = user_datas)]
 pub struct DbUserData {
@@ -163,7 +198,7 @@ async fn write_data_locked(
             .set((
                 user_datas::json_data.eq(&json_data),
                 user_datas::is_deleted.eq(false),
-                user_datas::occur_sn.eq(next_sn_locked(conn).await?),
+                user_datas::occur_sn.eq(next_sn_locked(conn, user_id).await?),
                 user_datas::created_at.eq(UnixMillis::now()),
             ))
             .get_result::<DbUserData>(conn)
@@ -176,7 +211,7 @@ async fn write_data_locked(
             data_type: event_type.to_owned(),
             json_data,
             is_deleted: false,
-            occur_sn: Some(next_sn_locked(conn).await?),
+            occur_sn: Some(next_sn_locked(conn, user_id).await?),
             created_at: UnixMillis::now(),
         };
         diesel::insert_into(user_datas::table)
@@ -187,7 +222,10 @@ async fn write_data_locked(
     }
 }
 
-async fn next_sn_locked(conn: &mut AsyncPgConnection) -> DataResult<i64> {
+async fn next_sn_locked(conn: &mut AsyncPgConnection, user_id: &UserId) -> DataResult<i64> {
+    // All public mutations own a transaction on this connection. Acquire after their
+    // invite/key locks, and never acquire another stream lock before this commits.
+    lock_account_data_publication(conn, user_id).await?;
     diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
         .get_result(conn)
         .await
@@ -347,7 +385,7 @@ async fn delete_data_locked(
         .set((
             user_datas::json_data.eq(json!({})),
             user_datas::is_deleted.eq(true),
-            user_datas::occur_sn.eq(next_sn_locked(conn).await?),
+            user_datas::occur_sn.eq(next_sn_locked(conn, user_id).await?),
             user_datas::created_at.eq(UnixMillis::now()),
         ))
         .execute(conn)

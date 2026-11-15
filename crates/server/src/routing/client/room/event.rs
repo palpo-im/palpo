@@ -203,7 +203,7 @@ pub(super) async fn get_context(
         &room_id,
         Some(base_token),
         None,
-        None,
+        Some(&args.filter),
         limit / 2,
     )
     .await?;
@@ -242,9 +242,13 @@ pub(super) async fn get_context(
     let events_after = timeline::stream::load_pdus_forward(
         Some(sender_id),
         &room_id,
-        Some(base_token),
+        // The forward reader includes its lower bound; the anchor belongs only
+        // in `event`, independently of the surrounding-event filter.
+        Some(crate::event::BatchToken::new_live(
+            base_token.stream_ordering() + 1,
+        )),
         None,
-        None,
+        Some(&args.filter),
         limit / 2,
     )
     .await?;
@@ -303,7 +307,9 @@ pub(super) async fn get_context(
                     continue;
                 }
             };
-            state.push(pdu.to_state_event_for(sender_id, authed.device_id()));
+            if pdu.can_pass_filter(&args.filter) {
+                state.push(pdu.to_state_event_for(sender_id, authed.device_id()));
+            }
         } else if !lazy_load_enabled || lazy_loaded.contains(&state_key) {
             let pdu = match timeline::get_pdu(&event_id).await {
                 Ok(pdu) => pdu,
@@ -312,7 +318,9 @@ pub(super) async fn get_context(
                     continue;
                 }
             };
-            state.push(pdu.to_state_event_for(sender_id, authed.device_id()));
+            if pdu.can_pass_filter(&args.filter) {
+                state.push(pdu.to_state_event_for(sender_id, authed.device_id()));
+            }
         }
     }
 
@@ -489,6 +497,10 @@ pub(super) async fn timestamp_to_event(
         Err(StatusError::not_found().brief("no event found").into())
     }
 }
+
+#[cfg(test)]
+#[path = "context_filter_tests.rs"]
+mod context_filter_tests;
 
 #[cfg(test)]
 mod transaction_tests {
