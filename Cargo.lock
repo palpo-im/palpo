@@ -3314,9 +3314,9 @@ checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
 
 [[package]]
 name = "mime-infer"
-version = "4.0.1"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a10bc91d55685b82739d1dc95ec6e40485695cfe07b0a3abc1a82df17c40a0e5"
+checksum = "f2b2c04a62545765af6216b15a02e33a2a26a8b969fc4b220e46c4e09e1210dc"
 dependencies = [
  "mime",
  "unicase",
