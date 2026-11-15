@@ -16,6 +16,7 @@ mod register;
 mod retention;
 mod room;
 mod room_key;
+mod rtc;
 mod session;
 pub mod sync_msc4186;
 mod sync_v3;
@@ -122,6 +123,11 @@ fn router_inner() -> Router {
             )
     }
     client
+        .push(
+            Router::with_path("v1/rtc/transports")
+                .hoop(hoops::auth_by_access_token)
+                .get(rtc::stable_transports),
+        )
         .push(
             Router::with_path("v1").push(user::stable_v1_router()).push(
                 Router::with_path("room_summary/{room_id_or_alias}")
@@ -233,6 +239,11 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
 #[endpoint]
 fn supported_versions() -> JsonResult<VersionsResBody> {
     let mut body = supported_versions_body(config::get().delayed_events.enable);
+    if config::get().rtc.enabled {
+        for flag in ["org.matrix.msc4143", "org.matrix.msc4143.stable"] {
+            body.unstable_features.insert(flag.to_owned(), true);
+        }
+    }
     #[cfg(feature = "unstable-msc1763")]
     if crate::retention::enabled() {
         body.unstable_features

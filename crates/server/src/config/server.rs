@@ -7,8 +7,8 @@ use serde::Deserialize;
 use super::{
     AdminConfig, BlurhashConfig, CompressionConfig, DbConfig, DelayedEventsConfig,
     DelegatedAuthConfig, FederationConfig, HttpClientConfig, JwtConfig, LoggerConfig, MediaConfig,
-    OidcConfig, PresenceConfig, ProxyConfig, ReadReceiptConfig, StorageConfig, TurnConfig,
-    TypingConfig, UrlPreviewConfig, WellKnownConfig,
+    OidcConfig, PresenceConfig, ProxyConfig, ReadReceiptConfig, RtcConfig, StorageConfig,
+    TurnConfig, TypingConfig, UrlPreviewConfig, WellKnownConfig,
 };
 use crate::core::serde::{default_false, default_true};
 use crate::core::{OwnedRoomOrAliasId, OwnedServerName, RoomVersionId};
@@ -76,7 +76,7 @@ impl ListenerConfig {
 "#,
     ignore = "federation well_known compression typing read_receipt presence \
         admin url_preview turn media storage blurhash keypair ldap proxy jwt oidc logger db appservice \
-        delayed_events registration_email retention"
+        delayed_events registration_email retention rtc"
 )]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
@@ -792,6 +792,10 @@ pub struct ServerConfig {
     // external structure; separate section
     #[serde(default)]
     pub well_known: WellKnownConfig,
+
+    // external structure; separate section
+    #[serde(default)]
+    pub rtc: RtcConfig,
 
     // external structure; separate section
     #[serde(default)]

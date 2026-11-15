@@ -9,6 +9,9 @@ pub(super) fn router() -> Router {
         .hoop(hoops::auth_by_access_token)
         .hoop(hoops::limit_rate)
         .push(super::delayed_event::authed_router());
+    let authed = authed.push(
+        Router::with_path("org.matrix.msc4143/rtc/transports").get(super::rtc::unstable_transports),
+    );
     #[cfg(feature = "unstable-msc1763")]
     let authed = authed.push(super::retention::router());
     Router::with_path("unstable")

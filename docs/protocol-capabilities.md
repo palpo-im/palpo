@@ -119,3 +119,31 @@ execution results. Remaining validation includes independent MSC revision pinnin
 feature combinations beyond default/all, client/peer interoperability, and Spaces
 or membership topology × permission × room-version combinations. Historical test
 counts or passing advertisement tests must not be used as a substitute for that work.
+
+## MatrixRTC transport discovery
+
+Set `[rtc] enabled = true` to enable authenticated `GET /_matrix/client/v1/rtc/transports`
+and `GET /_matrix/client/unstable/org.matrix.msc4143/rtc/transports`. Their response keys
+are `transports` and `rtc_transports`, respectively. These MSC4143 paths are not yet
+part of an advertised published Matrix specification version.
+
+```toml
+[rtc]
+enabled = true
+
+[[rtc.transports]]
+type = "m.livekit"
+url = "wss://livekit.example.com"
+
+[[rtc.transports]]
+type = "livekit"
+livekit_service_url = "https://jwt.example.com"
+```
+
+Discovery returns the configured order and preserves custom transport data. An enabled
+empty configuration returns an empty list; disabled discovery returns `M_NOT_FOUND`.
+The `org.matrix.msc4143` and `org.matrix.msc4143.stable` flags indicate enabled discovery,
+including an empty service list. No service health probe or token issuance is performed.
+Deploy the external services separately; built-in MSC4195 token/delegated-leave support
+remains tracked in #576. `well_known.rtc_foci` continues to configure the separate public
+well-known response, and is not populated from this list.
