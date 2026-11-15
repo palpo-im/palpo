@@ -217,12 +217,11 @@ async fn federation_event_reads() {
         if version == "12" {
             let create = crate::room::get_create(&private_room).await.unwrap();
             assert!(
-                crate::room::timeline::get_pdu_json(&create.event_id)
+                !crate::room::timeline::get_pdu_json(&create.event_id)
                     .await
                     .unwrap()
                     .unwrap()
-                    .get("room_id")
-                    .is_none()
+                    .contains_key("room_id")
             );
         }
 
