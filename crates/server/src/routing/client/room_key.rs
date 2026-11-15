@@ -39,7 +39,7 @@ pub fn authed_router() -> Router {
                 .push(
                     Router::with_path("{version}")
                         .get(get_version)
-                        .post(update_version)
+                        .put(update_version)
                         .delete(delete_version),
                 ),
         )
@@ -146,26 +146,16 @@ async fn add_keys(
     let authed = depot.authed_info()?;
     let version = version.into_inner();
 
-    let keys_version = key_backup::get_latest_room_keys_version(authed.user_id())
-        .await?
-        .ok_or(MatrixError::not_found("Key backup does not exist."))?;
-    if version != keys_version.version {
-        return Err(MatrixError::invalid_param(
-            "You may only manipulate the most recently created version of the backup.",
-        )
-        .into());
-    }
-
-    for (room_id, room) in &body.rooms {
-        for (session_id, key_data) in &room.sessions {
-            key_backup::add_key(authed.user_id(), version, room_id, session_id, key_data).await?
-        }
-    }
-
-    json_ok(ModifyKeysResBody {
-        count: (key_backup::count_keys(authed.user_id(), version).await? as u32).into(),
-        etag: key_backup::get_etag(authed.user_id(), version).await?,
-    })
+    let keys = body
+        .rooms
+        .iter()
+        .flat_map(|(room_id, room)| {
+            room.sessions
+                .iter()
+                .map(move |(session, key)| (room_id.as_ref(), session.as_str(), key))
+        })
+        .collect::<Vec<_>>();
+    json_ok(key_backup::store_keys(authed.user_id(), version, &keys).await?)
 }
 
 /// #PUT /_matrix/client/r0/room_keys/keys/{room_id}
@@ -183,31 +173,12 @@ async fn add_keys_for_room(
 ) -> JsonResult<ModifyKeysResBody> {
     let authed = depot.authed_info()?;
 
-    let keys_version = key_backup::get_latest_room_keys_version(authed.user_id())
-        .await?
-        .ok_or(MatrixError::not_found("Key backup does not exist."))?;
-    if args.version != keys_version.version {
-        return Err(MatrixError::invalid_param(
-            "You may only manipulate the most recently created version of the backup.",
-        )
-        .into());
-    }
-
-    for (session_id, key_data) in &body.sessions {
-        key_backup::add_key(
-            authed.user_id(),
-            args.version,
-            &args.room_id,
-            session_id,
-            key_data,
-        )
-        .await?
-    }
-
-    json_ok(ModifyKeysResBody {
-        count: (key_backup::count_keys(authed.user_id(), args.version).await? as u32).into(),
-        etag: key_backup::get_etag(authed.user_id(), args.version).await?,
-    })
+    let keys = body
+        .sessions
+        .iter()
+        .map(|(session, key)| (args.room_id.as_ref(), session.as_str(), key))
+        .collect::<Vec<_>>();
+    json_ok(key_backup::store_keys(authed.user_id(), args.version, &keys).await?)
 }
 /// #PUT /_matrix/client/r0/room_keys/keys/{room_d}/{session_id}
 /// Add the received backup key to the database.
@@ -221,34 +192,17 @@ async fn add_keys_for_session(
     args: KeysForSessionReqArgs,
     body: JsonBody<AddKeysForSessionReqBody>,
     depot: &mut Depot,
-) -> JsonResult<KeyBackupData> {
+) -> JsonResult<ModifyKeysResBody> {
     let authed = depot.authed_info()?;
     let body = body.into_inner();
-
-    let keys_version = key_backup::get_latest_room_keys_version(authed.user_id())
-        .await?
-        .ok_or(MatrixError::not_found("Key backup does not exist."))?;
-    if args.version != keys_version.version {
-        return Err(MatrixError::invalid_param(
-            "You may only manipulate the most recently created version of the backup.",
+    json_ok(
+        key_backup::store_keys(
+            authed.user_id(),
+            args.version,
+            &[(args.room_id.as_ref(), args.session_id.as_str(), &body.0)],
         )
-        .into());
-    }
-
-    key_backup::add_key(
-        authed.user_id(),
-        args.version,
-        &args.room_id,
-        &args.session_id,
-        &body.0,
+        .await?,
     )
-    .await?;
-
-    // json_ok(ModifyKeysResBody {
-    //     count: (key_backup::count_keys(authed.user_id(), args.version)? as u32).into(),
-    //     etag: key_backup::get_etag(authed.user_id(), args.version)?,
-    // })
-    json_ok(body.0)
 }
 
 /// #GET /_matrix/client/r0/room_keys/version/{version}
@@ -360,12 +314,7 @@ async fn delete_keys(
 ) -> JsonResult<ModifyKeysResBody> {
     let authed = depot.authed_info()?;
     let version = version.into_inner();
-    key_backup::delete_all_keys(authed.user_id(), version).await?;
-
-    json_ok(ModifyKeysResBody {
-        count: (key_backup::count_keys(authed.user_id(), version).await? as u32).into(),
-        etag: key_backup::get_etag(authed.user_id(), version).await?,
-    })
+    json_ok(key_backup::delete_keys(authed.user_id(), version, None, None).await?)
 }
 /// #DELETE /_matrix/client/r0/room_keys/keys/{room_id}
 /// Delete the keys from the backup for a given room.
@@ -377,12 +326,9 @@ async fn delete_room_keys(
 ) -> JsonResult<ModifyKeysResBody> {
     let authed = depot.authed_info()?;
 
-    key_backup::delete_room_keys(authed.user_id(), args.version, &args.room_id).await?;
-
-    json_ok(ModifyKeysResBody {
-        count: (key_backup::count_keys(authed.user_id(), args.version).await? as u32).into(),
-        etag: key_backup::get_etag(authed.user_id(), args.version).await?,
-    })
+    json_ok(
+        key_backup::delete_keys(authed.user_id(), args.version, Some(&args.room_id), None).await?,
+    )
 }
 /// #DELETE /_matrix/client/r0/room_keys/keys/{room_id}/{session_id}
 /// Delete a key from the backup.
@@ -394,19 +340,20 @@ async fn delete_session_keys(
 ) -> JsonResult<ModifyKeysResBody> {
     let authed = depot.authed_info()?;
 
-    key_backup::delete_room_key(
-        authed.user_id(),
-        args.version,
-        &args.room_id,
-        &args.session_id,
+    json_ok(
+        key_backup::delete_keys(
+            authed.user_id(),
+            args.version,
+            Some(&args.room_id),
+            Some(&args.session_id),
+        )
+        .await?,
     )
-    .await?;
-
-    json_ok(ModifyKeysResBody {
-        count: (key_backup::count_keys(authed.user_id(), args.version).await? as u32).into(),
-        etag: key_backup::get_etag(authed.user_id(), args.version).await?,
-    })
 }
+
+#[cfg(test)]
+#[path = "room_key_mutation_tests.rs"]
+mod mutation_tests;
 
 #[cfg(test)]
 mod tests {
@@ -520,7 +467,7 @@ mod tests {
             "session_data":{"ciphertext":"fixture-ciphertext","ephemeral":"fixture-ephemeral","mac":"fixture-mac"}
         })).unwrap();
         for session in ["first-session", "second-session"] {
-            key_backup::add_key(&alice, backup.version, room, &session.to_owned(), &data)
+            key_backup::add_key(&alice, backup.version, room, session, &data)
                 .await
                 .unwrap();
         }
@@ -528,7 +475,7 @@ mod tests {
             &alice,
             backup.version,
             crate::core::room_id!("!other-backup:example.test"),
-            &"other-room-session".to_owned(),
+            "other-room-session",
             &data,
         )
         .await

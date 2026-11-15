@@ -10,7 +10,9 @@ use crate::core::identifiers::*;
 use crate::core::room::{TimestampToEventReqArgs, TimestampToEventResBody};
 use crate::data::room::DbEvent;
 use crate::room::{state, timeline};
-use crate::{AppError, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, config, json_ok};
+use crate::{
+    AppError, AppResult, AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, config, json_ok,
+};
 
 pub fn router() -> Router {
     Router::new()
@@ -22,6 +24,21 @@ pub fn router() -> Router {
             Router::with_path("exchange_third_party_invite/{room_id}")
                 .put(exchange_third_party_invite),
         )
+}
+
+/// State/auth recovery uses current server membership, rather than message
+/// history visibility. Bind the requested event to that same authorized room
+/// using its database identity, including v12's room-ID-less create events.
+pub(super) async fn check_room_event_access(
+    origin: &ServerName,
+    room_id: &RoomId,
+    event_id: &EventId,
+) -> AppResult<()> {
+    crate::federation::access_check(origin, room_id, None).await?;
+    if DbEvent::get_by_id(event_id).await?.room_id != room_id {
+        return Err(MatrixError::forbidden("event belongs to a different room", None).into());
+    }
+    Ok(())
 }
 
 /// #GET /_matrix/federation/v1/event/{event_id}
@@ -71,26 +88,10 @@ async fn auth_chain(
     depot: &mut Depot,
 ) -> JsonResult<EventAuthResBody> {
     let origin = depot.origin()?;
-    crate::federation::access_check(origin, &args.room_id, None).await?;
-
-    let event = timeline::get_pdu_json(&args.event_id)
-        .await?
-        .ok_or_else(|| {
-            warn!("event not found, event id: {:?}", &args.event_id);
-            MatrixError::not_found("event not found")
-        })?;
-
-    // For v12 rooms, the event JSON does not contain `room_id`. Fall back to
-    // the events table column when the JSON field is missing.
-    let room_id_owned: OwnedRoomId = match event.get("room_id").and_then(|val| val.as_str()) {
-        Some(s) => s
-            .try_into()
-            .map_err(|_| AppError::internal("invalid room id field in event in database"))?,
-        None => DbEvent::get_by_id(&args.event_id).await?.room_id,
-    };
+    check_room_event_access(origin, &args.room_id, &args.event_id).await?;
 
     let auth_chain_ids =
-        crate::room::auth_chain::get_auth_chain_ids(&room_id_owned, [&*args.event_id].into_iter())
+        crate::room::auth_chain::get_auth_chain_ids(&args.room_id, [&*args.event_id].into_iter())
             .await?;
 
     let mut auth_chain_events = Vec::new();

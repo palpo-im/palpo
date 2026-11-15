@@ -1939,3 +1939,6 @@ mod resource_review_tests;
 
 #[cfg(test)]
 mod protocol_contract_tests;
+
+#[cfg(test)]
+mod account_data_publication_tests;

@@ -14,6 +14,11 @@ pub mod membership;
 pub mod peek;
 pub use access_check::access_check;
 
+// Errors are parsed before callers (including media downloads) can enforce their
+// own body budgets. Keep both buffering and diagnostics bounded here.
+const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_ERROR_LOG_BYTES: usize = 2048;
+
 #[tracing::instrument(skip(request))]
 pub(crate) async fn send_request(
     destination: &ServerName,
@@ -116,32 +121,7 @@ pub(crate) async fn send_request(
             if status == 200 {
                 Ok(response)
             } else {
-                let authenticate = if let Some(header) = response.headers().get("WWW-Authenticate")
-                {
-                    if let Ok(header) = header.to_str() {
-                        AuthenticateError::from_str(header)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                let body = response.text().await.unwrap_or_default();
-                warn!("answer from {destination}({url}) {status}: {body}");
-                let mut extra = serde_json::from_str::<serde_json::Map<String, JsonValue>>(&body)
-                    .unwrap_or_default();
-                let msg = extra
-                    .remove("error")
-                    .map(|v| v.as_str().unwrap_or_default().to_owned())
-                    .unwrap_or("parse remote response data failed".to_owned());
-                Err(MatrixError {
-                    status_code: Some(status),
-                    authenticate,
-                    kind: serde_json::from_value(JsonValue::Object(extra))
-                        .unwrap_or(ErrorKind::Unknown),
-                    body: msg.into(),
-                }
-                .into())
+                Err(error_response(destination, &url, response).await.into())
             }
         }
         Err(e) => {
@@ -153,6 +133,46 @@ pub(crate) async fn send_request(
         }
     }
 }
+
+async fn error_response(
+    destination: &ServerName,
+    url: &url::Url,
+    response: reqwest::Response,
+) -> MatrixError {
+    let status = response.status();
+    let authenticate = response
+        .headers()
+        .get("WWW-Authenticate")
+        .and_then(|header| header.to_str().ok())
+        .and_then(AuthenticateError::from_str);
+    let body = crate::utils::read_response_limited(response, MAX_ERROR_RESPONSE_BYTES).await;
+    let mut extra = match body {
+        Ok(body) => {
+            let text = String::from_utf8_lossy(&body);
+            let prefix = &text[..text.floor_char_boundary(MAX_ERROR_LOG_BYTES.min(text.len()))];
+            warn!(%destination, %url, %status, body = %prefix, truncated = (prefix.len() < text.len()), "federation error response");
+            serde_json::from_slice::<serde_json::Map<String, JsonValue>>(&body).unwrap_or_default()
+        }
+        Err(error) => {
+            warn!(%destination, %url, %status, %error, "federation error body rejected");
+            serde_json::Map::new()
+        }
+    };
+    let message = extra
+        .remove("error")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "Could not read a bounded remote error response".to_owned());
+    MatrixError {
+        status_code: Some(status),
+        authenticate,
+        kind: serde_json::from_value(JsonValue::Object(extra)).unwrap_or(ErrorKind::Unknown),
+        body: message.into(),
+    }
+}
+
+#[cfg(test)]
+#[path = "federation/error_response_tests.rs"]
+mod error_response_tests;
 
 /// Checks whether the given user can join the given room via a restricted join.
 pub(crate) async fn user_can_perform_restricted_join(
