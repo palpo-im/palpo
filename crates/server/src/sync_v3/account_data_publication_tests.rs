@@ -52,7 +52,7 @@ fn sync(service: &Service, room: &OwnedRoomId, since: i64, sliding: bool) -> Joi
                 "http://localhost/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=0&pos={since}"
             ))
             .json(&json!({
-                "conn_id": "account-data-publication",
+                "conn_id": "account-data",
                 "room_subscriptions": {(room.as_str()): {"required_state": [], "timeline_limit": 1}},
                 "extensions": {"account_data": {"enabled": true}}
             })),

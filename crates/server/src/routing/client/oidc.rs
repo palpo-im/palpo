@@ -125,6 +125,10 @@ use crate::{AppError, AppResult, JsonResult, TOKEN_LENGTH, json_ok, user, utils}
 
 const SSO_LOGIN_TOKEN_TTL_MS: u64 = 5_000;
 
+#[cfg(test)]
+#[path = "oidc_redirect_tests.rs"]
+mod redirect_tests;
+
 /// OIDC session state for tracking authentication flow
 ///
 /// This structure holds temporary data during the OAuth flow:
@@ -549,8 +553,7 @@ pub async fn oidc_auth(req: &mut Request, res: &mut Response) -> AppResult<()> {
         .query::<String>("redirectUrl")
         .or_else(|| req.query::<String>("redirect_url"));
     if let Some(redirect_url) = &redirect_url {
-        Url::parse(redirect_url)
-            .map_err(|e| MatrixError::invalid_param(format!("Invalid redirectUrl: {e}")))?;
+        validate_client_redirect(redirect_url, oidc_config)?;
     }
 
     // Step 3: Discover provider endpoints
@@ -738,6 +741,13 @@ pub async fn oidc_callback(req: &mut Request, res: &mut Response) -> AppResult<(
         .enabled_oidc()
         .ok_or_else(|| MatrixError::unknown("OIDC configuration missing"))?;
 
+    // The legacy session cookie is client-controlled. Recheck the destination
+    // before exchanging the code or issuing credentials, including sessions
+    // created before an operator removed a client from the trusted list.
+    if let Some(redirect_url) = session.redirect_url.as_deref() {
+        validate_client_redirect(redirect_url, oidc_config)?;
+    }
+
     if now > session.created_at + oidc_config.session_timeout {
         return Err(MatrixError::unauthorized("OIDC session has expired").into());
     }
@@ -863,6 +873,21 @@ pub(super) fn append_login_token(
         .append_pair("loginToken", login_token);
 
     Ok(redirect_url)
+}
+
+fn validate_client_redirect(
+    redirect_url: &str,
+    oidc_config: &config::OidcConfig,
+) -> Result<(), MatrixError> {
+    let url = Url::parse(redirect_url)
+        .map_err(|e| MatrixError::invalid_param(format!("Invalid redirectUrl: {e}")))?;
+    if !config::sso_redirect_allowed(&url, &oidc_config.sso_allowed_redirect_origins) {
+        return Err(MatrixError::forbidden(
+            "SSO redirectUrl is not allowed",
+            None,
+        ));
+    }
+    Ok(())
 }
 
 /// `POST /_matrix/client/*/oidc/login`

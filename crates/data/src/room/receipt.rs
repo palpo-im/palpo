@@ -3,9 +3,8 @@ use std::collections::BTreeMap;
 use diesel::prelude::*;
 use horme::{OptionalExtension as _, RunQueryDsl};
 
-use crate::core::events::receipt::{ReceiptEventContent, ReceiptType};
+use crate::core::events::receipt::{Receipt, ReceiptEventContent, ReceiptThread, ReceiptType};
 use crate::core::identifiers::*;
-use crate::core::serde::JsonValue;
 use crate::core::{Seqnum, UnixMillis};
 use crate::room::DbReceipt;
 use crate::schema::*;
@@ -71,6 +70,24 @@ pub async fn set_private_read(
     event_id: &EventId,
     event_sn: Seqnum,
 ) -> DataResult<()> {
+    set_private_read_receipt(
+        room_id,
+        user_id,
+        event_id,
+        event_sn,
+        &Receipt::new(UnixMillis::now()),
+    )
+    .await
+}
+
+/// Persist the original private receipt, including its independent thread scope.
+pub async fn set_private_read_receipt(
+    room_id: &RoomId,
+    user_id: &UserId,
+    event_id: &EventId,
+    event_sn: Seqnum,
+    receipt: &Receipt,
+) -> DataResult<()> {
     diesel::insert_into(event_receipts::table)
         .values(&DbReceipt {
             sn: next_sn().await?,
@@ -79,9 +96,12 @@ pub async fn set_private_read(
             user_id: user_id.to_owned(),
             event_id: event_id.to_owned(),
             event_sn,
-            thread_id: None,
-            json_data: JsonValue::default(),
-            receipt_at: UnixMillis::now(),
+            thread_id: match &receipt.thread {
+                ReceiptThread::Thread(id) => Some(id.clone()),
+                _ => None,
+            },
+            json_data: serde_json::to_value(receipt)?,
+            receipt_at: receipt.ts.unwrap_or_else(UnixMillis::now),
         })
         .execute(&mut crate::db())
         .await?;
@@ -122,6 +142,21 @@ pub async fn last_private_read_event_id(
         .order_by(event_receipts::sn.desc())
         .select(event_receipts::event_id)
         .first::<OwnedEventId>(&mut crate::db())
+        .await
+        .optional()
+        .map_err(Into::into)
+}
+
+pub async fn last_private_read_receipt(
+    user_id: &UserId,
+    room_id: &RoomId,
+) -> DataResult<Option<DbReceipt>> {
+    event_receipts::table
+        .filter(event_receipts::room_id.eq(room_id))
+        .filter(event_receipts::user_id.eq(user_id))
+        .filter(event_receipts::ty.eq(ReceiptType::ReadPrivate.to_string()))
+        .order_by(event_receipts::sn.desc())
+        .first::<DbReceipt>(&mut crate::db())
         .await
         .optional()
         .map_err(Into::into)

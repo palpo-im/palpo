@@ -4,11 +4,8 @@ use salvo::oapi::extract::*;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::from_value as from_json_value;
-use serde_json::value::to_raw_value;
 
 use crate::core::client::profile::*;
-use crate::core::events::room::member::RoomMemberEventContent;
-use crate::core::events::{StateEventType, TimelineEventType};
 use crate::core::federation::query::{
     ProfileReqArgs, ProfileResBody as FederationProfileResBody, profile_request,
 };
@@ -18,11 +15,7 @@ use crate::core::serde::{JsonObject, JsonValue};
 use crate::core::user::ProfileResBody;
 use crate::data::user::DbProfile;
 use crate::exts::*;
-use crate::room::timeline;
-use crate::{
-    AppError, AuthArgs, EmptyResult, JsonResult, MatrixError, PduBuilder, data, empty_ok, hoops,
-    json_ok, room,
-};
+use crate::{AuthArgs, EmptyResult, JsonResult, MatrixError, data, empty_ok, hoops, json_ok};
 
 pub fn public_router() -> Router {
     Router::with_path("profile/{user_id}")
@@ -353,54 +346,7 @@ async fn update_avatar_url(
     avatar_url: Option<OwnedMxcUri>,
     blurhash: Option<String>,
 ) -> EmptyResult {
-    data::user::ensure_profile_exists(user_id).await?;
-
-    data::user::set_global_avatar_and_blurhash(user_id, avatar_url.as_deref(), blurhash.as_deref())
-        .await?;
-
-    // Send a new membership event and presence update into all joined rooms
-    let mut all_joined_rooms: Vec<_> = Vec::new();
-    for room_id in data::user::joined_rooms(user_id).await?.into_iter() {
-        let result: Result<_, AppError> = async {
-            Ok((
-                PduBuilder {
-                    event_type: TimelineEventType::RoomMember,
-                    content: to_raw_value(&RoomMemberEventContent {
-                        avatar_url: avatar_url.clone(),
-                        blurhash: blurhash.clone(),
-                        ..room::get_state_content::<RoomMemberEventContent>(
-                            &room_id,
-                            &StateEventType::RoomMember,
-                            user_id.as_str(),
-                            None,
-                        )
-                        .await?
-                    })
-                    .expect("event is valid, we just created it"),
-                    state_key: Some(user_id.to_string()),
-                    ..Default::default()
-                },
-                room_id,
-            ))
-        }
-        .await;
-        if let Ok(item) = result {
-            all_joined_rooms.push(item);
-        }
-    }
-
-    crate::data::user::refresh_presence_for_profile(user_id).await?;
-    for (pdu_builder, room_id) in all_joined_rooms {
-        let _ = timeline::build_and_append_pdu(
-            pdu_builder,
-            user_id,
-            &room_id,
-            &room::get_version(&room_id).await?,
-            &room::lock_state(&room_id).await,
-        )
-        .await?;
-    }
-
+    crate::user::profile::set_avatar(user_id, avatar_url.as_deref(), blurhash.as_deref()).await?;
     empty_ok()
 }
 
@@ -475,55 +421,7 @@ async fn delete_display_name(
 }
 
 async fn update_display_name(user_id: &UserId, display_name: Option<String>) -> EmptyResult {
-    if let Some(display_name) = display_name.as_deref() {
-        data::user::set_display_name(user_id, display_name).await?;
-    } else {
-        data::user::remove_display_name(user_id).await?;
-    }
-
-    // Send a new membership event and presence update into all joined rooms
-    let mut all_joined_rooms: Vec<_> = Vec::new();
-    for room_id in data::user::joined_rooms(user_id).await?.into_iter() {
-        let result: Result<_, AppError> = async {
-            Ok((
-                PduBuilder {
-                    event_type: TimelineEventType::RoomMember,
-                    content: to_raw_value(&RoomMemberEventContent {
-                        display_name: display_name.clone(),
-                        ..room::get_state_content::<RoomMemberEventContent>(
-                            &room_id,
-                            &StateEventType::RoomMember,
-                            user_id.as_str(),
-                            None,
-                        )
-                        .await?
-                    })
-                    .expect("event is valid, we just created it"),
-                    state_key: Some(user_id.to_string()),
-                    ..Default::default()
-                },
-                room_id,
-            ))
-        }
-        .await;
-        if let Ok(item) = result {
-            all_joined_rooms.push(item);
-        }
-    }
-
-    for (pdu_builder, room_id) in all_joined_rooms {
-        let _ = timeline::build_and_append_pdu(
-            pdu_builder,
-            user_id,
-            &room_id,
-            &crate::room::get_version(&room_id).await?,
-            &room::lock_state(&room_id).await,
-        )
-        .await?;
-    }
-
-    crate::data::user::refresh_presence_for_profile(user_id).await?;
-
+    crate::user::profile::set_display_name(user_id, display_name.as_deref()).await?;
     empty_ok()
 }
 

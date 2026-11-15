@@ -1322,6 +1322,23 @@ pub struct ListUsersFilter {
     pub dir: Option<String>,
 }
 
+impl ListUsersFilter {
+    /// Shared by the query and its HTTP pagination metadata.
+    pub fn pagination(&self) -> DataResult<(i64, i64)> {
+        let from = self.from.unwrap_or(0);
+        let limit = self.limit.unwrap_or(100);
+        if from < 0 {
+            return Err(
+                crate::core::MatrixError::invalid_param("from must not be negative").into(),
+            );
+        }
+        if limit <= 0 {
+            return Err(crate::core::MatrixError::invalid_param("limit must be positive").into());
+        }
+        Ok((from, limit.min(1000)))
+    }
+}
+
 /// Escape special characters in SQL LIKE/ILIKE patterns.
 ///
 /// This prevents users from injecting wildcard characters (% and _)
@@ -1340,6 +1357,7 @@ fn escape_like_pattern(value: &str) -> String {
 }
 
 pub async fn list_users(filter: &ListUsersFilter) -> DataResult<(Vec<DbUser>, i64)> {
+    let (from, limit) = filter.pagination()?;
     let mut query = users::table.into_boxed();
     let mut count_query = users::table.into_boxed();
 
@@ -1421,22 +1439,27 @@ pub async fn list_users(filter: &ListUsersFilter) -> DataResult<(Vec<DbUser>, i6
                 query.order(users::shadow_banned.desc())
             }
         }
-        _ => {
+        Some("creation_ts") => {
             if dir_asc {
                 query.order(users::created_at.asc())
             } else {
                 query.order(users::created_at.desc())
             }
         }
+        _ => {
+            if dir_asc {
+                query.order(users::localpart.asc())
+            } else {
+                query.order(users::localpart.desc())
+            }
+        }
     };
 
-    // Apply pagination
-    if let Some(from) = filter.from {
-        query = query.offset(from);
-    }
+    // Stable pages even when the chosen sort field has many equal values.
+    query = query.then_order_by(users::id.asc());
 
-    let limit = filter.limit.unwrap_or(100).min(1000);
-    query = query.limit(limit);
+    // Apply pagination
+    query = query.offset(from).limit(limit);
 
     let users = query.load::<DbUser>(&mut crate::db()).await?;
 

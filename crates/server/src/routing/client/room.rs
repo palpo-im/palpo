@@ -27,9 +27,7 @@ use crate::core::client::room::{
 };
 use crate::core::directory::{PublicRoomFilter, PublicRoomsResBody, RoomNetwork};
 use crate::core::events::fully_read::{FullyReadEvent, FullyReadEventContent};
-use crate::core::events::receipt::{
-    Receipt, ReceiptEvent, ReceiptEventContent, ReceiptThread, ReceiptType,
-};
+use crate::core::events::receipt::{Receipt, ReceiptType};
 use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::events::room::create::RoomCreateEventContent;
 use crate::core::events::room::guest_access::{GuestAccess, RoomGuestAccessEventContent};
@@ -50,7 +48,7 @@ use crate::core::room_version_rules::{AuthorizationRules, RoomIdFormatVersion, R
 use crate::core::serde::{CanonicalJsonObject, JsonValue, RawJson};
 use crate::core::state::events::RoomCreateEvent;
 use crate::event::{PduBuilder, PduEvent, gen_event_id_canonical_json};
-use crate::room::{push_action, timeline};
+use crate::room::timeline;
 use crate::user::user_is_ignored;
 use crate::{
     AppResult, AuthArgs, DepotExt, EmptyResult, GetUrlOrigin, JsonResult, MatrixError,
@@ -409,6 +407,21 @@ async fn set_read_markers(
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
     let room_id = room_id.into_inner();
+    // Check the whole request before writing even the first marker. In particular,
+    // a valid fully-read target must not commit before a foreign receipt is refused.
+    if !room::user::is_joined(sender_id, &room_id).await? {
+        return Err(MatrixError::forbidden("You are not joined to this room.", None).into());
+    }
+    for event_id in [
+        &body.fully_read,
+        &body.private_read_receipt,
+        &body.read_receipt,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        room::receipt::validate_client_event(sender_id, &room_id, event_id, None).await?;
+    }
     if let Some(fully_read) = &body.fully_read {
         let fully_read_event = FullyReadEvent {
             content: FullyReadEventContent {
@@ -422,45 +435,32 @@ async fn set_read_markers(
             serde_json::to_value(fully_read_event.content).expect("to json value always works"),
         )
         .await?;
-        push_action::remove_actions_for_room(sender_id, &room_id).await?;
     }
 
     if let Some(event_id) = &body.private_read_receipt {
-        let (event_sn, _event_guard) = crate::event::ensure_event_sn(&room_id, event_id).await?;
-        data::room::receipt::set_private_read(&room_id, sender_id, event_id, event_sn).await?;
-        push_action::remove_actions_until(sender_id, &room_id, event_sn, None).await?;
-        push_action::refresh_notify_summary(sender_id, &room_id).await?;
+        let event_sn = crate::event::get_event_sn(event_id).await?;
+        room::receipt::record_client_receipt(
+            sender_id,
+            &room_id,
+            event_id,
+            event_sn,
+            ReceiptType::ReadPrivate,
+            &Receipt::new(UnixMillis::now()),
+        )
+        .await?;
     }
 
     if let Some(event) = &body.read_receipt {
-        let mut user_receipts = BTreeMap::new();
-        user_receipts.insert(
-            sender_id.to_owned(),
-            Receipt {
-                ts: Some(UnixMillis::now()),
-                thread: ReceiptThread::Unthreaded,
-            },
-        );
-
-        let mut receipts = BTreeMap::new();
-        receipts.insert(ReceiptType::Read, user_receipts);
-
-        let mut receipt_content = BTreeMap::new();
-        receipt_content.insert(event.to_owned(), receipts);
-
-        room::receipt::update_read(
+        let event_sn = crate::event::get_event_sn(event).await?;
+        room::receipt::record_client_receipt(
             sender_id,
             &room_id,
-            &ReceiptEvent {
-                content: ReceiptEventContent(receipt_content),
-                room_id: room_id.clone(),
-            },
-            true,
+            event,
+            event_sn,
+            ReceiptType::Read,
+            &Receipt::new(UnixMillis::now()),
         )
         .await?;
-        let event_sn = crate::event::get_event_sn(event).await?;
-        push_action::remove_actions_until(sender_id, &room_id, event_sn, None).await?;
-        push_action::refresh_notify_summary(sender_id, &room_id).await?;
     }
     empty_ok()
 }

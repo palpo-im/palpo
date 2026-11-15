@@ -50,6 +50,17 @@ pub struct OidcConfig {
     /// default: None (first alphabetically)
     pub default_provider: Option<String>,
 
+    /// Trusted Matrix clients allowed to receive a local OIDC SSO login token.
+    /// HTTP(S) entries must be origins, for example "https://chat.example.org".
+    /// A loopback origin without a port permits ephemeral client ports.
+    /// Native clients must register their complete callback URI, for example
+    /// "element://vector/webapp"; its path must match exactly. Query parameters
+    /// may carry per-login client state. Unknown destinations are rejected.
+    ///
+    /// default: []
+    #[serde(default)]
+    pub sso_allowed_redirect_origins: Vec<String>,
+
     /// Auto-create new users on first login
     ///
     /// When true: New accounts created automatically
@@ -120,6 +131,46 @@ pub struct OidcConfig {
     ///
     /// example: "https://auth.example.com/"
     pub mas_issuer: Option<String>,
+}
+
+/// Match an explicitly trusted SSO client. HTTP origins trust the client at
+/// every path; native applications register an exact callback path instead of
+/// granting an entire custom scheme. Never match opaque or credentialed URLs.
+pub(crate) fn sso_redirect_allowed(client: &url::Url, allowed: &[String]) -> bool {
+    if !client.username().is_empty() || client.password().is_some() || client.host().is_none() {
+        return false;
+    }
+    allowed.iter().any(|entry| {
+        let Ok(trusted) = url::Url::parse(entry) else {
+            return false;
+        };
+        if !trusted.username().is_empty()
+            || trusted.password().is_some()
+            || trusted.host().is_none()
+            || trusted.query().is_some()
+            || trusted.fragment().is_some()
+            || client.scheme() != trusted.scheme()
+            || client.host() != trusted.host()
+        {
+            return false;
+        }
+        if matches!(trusted.scheme(), "http" | "https") {
+            if trusted.path() != "/" {
+                return false;
+            }
+            let loopback = matches!(client.host_str(), Some("127.0.0.1" | "localhost"))
+                || matches!(client.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
+            (loopback && trusted.port().is_none())
+                || client.port_or_known_default() == trusted.port_or_known_default()
+        } else {
+            !matches!(
+                trusted.scheme(),
+                "file" | "javascript" | "data" | "blob" | "about"
+            ) && client.path() == trusted.path()
+                && client.port() == trusted.port()
+                && client.fragment().is_none()
+        }
+    })
 }
 
 #[derive(Clone, Deserialize)]

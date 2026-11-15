@@ -53,7 +53,7 @@ impl UserNotifySummary {
                 .sum::<u64>()
     }
     pub fn all_unread_count(&self) -> u64 {
-        self.notification_count + self.threads.values().map(|t| t.unread_count).sum::<u64>()
+        self.unread_count + self.threads.values().map(|t| t.unread_count).sum::<u64>()
     }
     pub fn all_highlight_count(&self) -> u64 {
         self.highlight_count
@@ -62,6 +62,31 @@ impl UserNotifySummary {
                 .values()
                 .map(|t| t.highlight_count)
                 .sum::<u64>()
+    }
+}
+
+#[cfg(test)]
+mod notification_summary_tests {
+    use super::*;
+
+    #[test]
+    fn gateway_badge_uses_notification_counts_in_every_scope() {
+        let summary = UserNotifySummary {
+            notification_count: 2,
+            unread_count: 20,
+            highlight_count: 0,
+            threads: BTreeMap::from([(
+                EventId::parse("$thread:badge.example").unwrap(),
+                ThreadPushSummary {
+                    notification_count: 3,
+                    unread_count: 30,
+                    highlight_count: 1,
+                },
+            )]),
+        };
+        assert_eq!(summary.all_notification_count(), 5);
+        assert_eq!(summary.all_unread_count(), 50);
+        assert_eq!(summary.all_highlight_count(), 1);
     }
 }
 

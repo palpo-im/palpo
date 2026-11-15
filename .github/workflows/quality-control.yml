@@ -240,6 +240,18 @@ jobs:
             routing::client::profile_query::tests::review_batch_profiles_known_local_data_and_validation
             routing::client::profile_query::tests::review_batch_profiles_disabled
             routing::client::profile_query::tests::review_batch_profiles_rate_limit
+            routing::client::room::receipt::review_tests::review_receipts_preserve_notifications_scopes_and_authorization
+            routing::federation::event::review_tests::review_missing_events_deduplicates_dag_and_honors_depth
+            room::push_action::tests::review_push_actions_are_atomic_idempotent_and_receipt_serialized
+            sending::push_authorization_tests::http_push_authorization_tracks_membership_and_current_invitation
+            routing::client::oidc::redirect_tests::http_oidc_redirect_requires_trusted_client
+            routing::client::media::thumbnail_response_tests::http_remote_thumbnail_strips_untrusted_response_headers
+            sync_v5::resource_review_tests::review_sync_http_bounds_and_required_state_batch_delivery
+            sync_v5::resource_review_tests::review_sync_orphans_expire_without_database_rows_and_cache_is_bounded
+            sync_v5::resource_review_tests::review_required_state_cas_rebases_and_failed_writes_do_not_ack_delivery
+            sync_v5::resource_review_tests::review_old_required_state_response_cannot_settle_new_configuration
+            routing::admin::user_admin::list_tests::review_admin_list_deactivation_contract_and_clamped_pagination
+            user::profile::tests::review_profile_writes_propagate_across_routes_and_retry_partial_rooms
           )
           # The shared PostgreSQL batch selects this substring, including in
           # module names. Global-owning cases must never enter that process.

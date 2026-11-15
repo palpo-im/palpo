@@ -4,6 +4,10 @@ use std::str::FromStr;
 mod upload_tests;
 
 #[cfg(test)]
+#[path = "media/thumbnail_response_tests.rs"]
+mod thumbnail_response_tests;
+
+#[cfg(test)]
 use diesel::prelude::*;
 #[cfg(test)]
 use horme::{OptionalExtension as _, RunQueryDsl};
@@ -317,23 +321,27 @@ pub async fn get_thumbnail(
         let request = crate::sending::get(url).into_inner();
         let response =
             crate::sending::send_federation_request(&args.server_name, request, None).await?;
-        *res.headers_mut() = response.headers().clone();
+        // A remote homeserver must not set cookies, redirects or browser
+        // policies under our origin. Only the media type is input to our own
+        // download policy; do not copy its response header map.
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
         let bytes =
             utils::read_response_limited(response, config::get().media.max_remote_thumbnail_size)
                 .await?;
 
         // Register the cache object so media deletion can find and remove it.
-        let content_type = res
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok());
         if let Err(e) = crate::media::save_thumbnail(
             &crate::core::Mxc {
                 server_name: &args.server_name,
                 media_id: &args.media_id,
             },
             None,
-            content_type,
+            Some(&content_type),
             None,
             &Dimension::new(args.width, args.height, args.method.clone()),
             &bytes,
@@ -343,13 +351,8 @@ pub async fn get_thumbnail(
             tracing::warn!("Failed to cache remote thumbnail: {e}");
         }
 
-        let ct = res
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_owned();
-        apply_download_headers(res, &ct, None)?;
+        apply_download_headers(res, &content_type, None)?;
+        res.add_header("Cross-Origin-Resource-Policy", "cross-origin", true)?;
         res.body = ResBody::Once(bytes);
         return Ok(());
     }

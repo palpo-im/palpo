@@ -6,6 +6,7 @@ pub mod key;
 pub mod pusher;
 pub use key::*;
 pub mod presence;
+pub mod profile;
 // mod ldap;
 // pub use ldap::*;
 pub mod session;

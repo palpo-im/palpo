@@ -27,6 +27,8 @@ use crate::{AppResult, data, extract_variant};
 mod presence;
 #[cfg(feature = "unstable-msc4262")]
 mod profiles;
+#[cfg(test)]
+mod resource_review_tests;
 
 /// Apply a sliding-sync list's filter pipeline to the candidate room sets.
 ///
@@ -116,6 +118,7 @@ async fn sort_rooms_by_activity(rooms: &mut [&RoomId]) -> AppResult<()> {
 
 type ListWindow = BTreeMap<usize, OwnedRoomId>;
 pub(crate) type ListWindows = BTreeMap<String, ListWindow>;
+type RequiredStateMap = BTreeMap<OwnedRoomId, BTreeMap<String, BTreeMap<String, Seqnum>>>;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct SlidingSyncCache {
@@ -134,7 +137,20 @@ struct SlidingSyncCache {
     #[serde(default)]
     list_window_acknowledgements: bool,
     extensions: sync_events::v5::ExtensionsConfig,
+    // Legacy event-only history cannot be pruned by room/key. Re-send its
+    // current state once when migrating to the bounded projection below.
+    #[serde(default, skip_serializing)]
     required_state: BTreeSet<Seqnum>,
+    #[serde(default)]
+    required_state_by_room: RequiredStateMap,
+    #[serde(default)]
+    pending_required_state: BTreeMap<String, RequiredStateMap>,
+    #[serde(default)]
+    required_state_refresh: bool,
+    #[serde(default)]
+    required_state_config: Vec<u8>,
+    #[serde(default)]
+    required_state_generation: u64,
     /// Rooms whose full member profiles this connection has acknowledged (MSC4262).
     ///
     /// Tracked separately from `known_rooms` because a room can have been delivered long
@@ -302,6 +318,7 @@ fn connection_key(
 /// `db_version` matches the row's. See [`refresh_connection`] and [`update_connection`].
 struct Connection {
     cache: Mutex<SlidingSyncCache>,
+    last_access: AtomicI64,
     /// Serializes this process's writes and reloads of the connection, so that in-process
     /// requests never conflict with each other -- only with other instances.
     write: tokio::sync::Mutex<()>,
@@ -311,8 +328,14 @@ impl Connection {
     fn new(cache: SlidingSyncCache) -> Self {
         Self {
             cache: Mutex::new(cache),
+            last_access: AtomicI64::new(UnixMillis::now().get() as i64),
             write: tokio::sync::Mutex::new(()),
         }
+    }
+
+    fn touch(&self) {
+        self.last_access
+            .store(UnixMillis::now().get() as i64, AtomicOrdering::Relaxed);
     }
 
     fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, SlidingSyncCache>> {
@@ -327,6 +350,36 @@ static CONNECTIONS: LazyLock<Mutex<BTreeMap<ConnectionKey, Arc<Connection>>>> =
 
 /// How many times a write that lost a race with another instance is rebased and retried.
 const MAX_CONNECTION_WRITE_ATTEMPTS: usize = 3;
+
+const MAX_CACHED_CONNECTIONS: usize = 4096;
+const MAX_DEVICE_CACHED_CONNECTIONS: usize = 16;
+const MEMORY_CONNECTION_EXPIRY_MS: i64 = 60 * 60 * 1000;
+
+/// Independent of database rows, including entries whose first INSERT failed.
+fn expire_memory_connections(cache: &mut BTreeMap<ConnectionKey, Arc<Connection>>, now: i64) {
+    cache.retain(|_, entry| {
+        Arc::strong_count(entry) > 1
+            || now.saturating_sub(entry.last_access.load(AtomicOrdering::Relaxed))
+                < MEMORY_CONNECTION_EXPIRY_MS
+    });
+}
+
+fn evict_oldest_connection(
+    cache: &mut BTreeMap<ConnectionKey, Arc<Connection>>,
+    device: Option<(&UserId, &DeviceId)>,
+) -> bool {
+    let oldest = cache
+        .iter()
+        .filter(|((user, id, _), entry)| {
+            Arc::strong_count(entry) == 1
+                && device.is_none_or(|(wanted_user, wanted_device)| {
+                    user == wanted_user && id == wanted_device
+                })
+        })
+        .min_by_key(|(_, entry)| entry.last_access.load(AtomicOrdering::Relaxed))
+        .map(|(key, _)| key.clone());
+    oldest.is_some_and(|key| cache.remove(&key).is_some())
+}
 
 /// Whether this process's copy of a connection is out of date with the database.
 ///
@@ -378,6 +431,7 @@ async fn load_or_create_connection(
 ) -> Arc<Connection> {
     let key = (user_id.clone(), device_id.clone(), conn_id.clone());
     if let Some(entry) = CONNECTIONS.lock().unwrap().get(&key) {
+        entry.touch();
         return Arc::clone(entry);
     }
 
@@ -395,6 +449,25 @@ async fn load_or_create_connection(
     // would clobber a concurrent task's cache, losing sticky list/subscription/
     // required-state updates on startup or after expiry.
     let mut cache = CONNECTIONS.lock().unwrap();
+    expire_memory_connections(&mut cache, UnixMillis::now().get() as i64);
+    if let Some(entry) = cache.get(&key) {
+        entry.touch();
+        return Arc::clone(entry);
+    }
+    let device_entries = cache
+        .keys()
+        .filter(|(user, device, _)| user == user_id && device == device_id)
+        .count();
+    if device_entries >= MAX_DEVICE_CACHED_CONNECTIONS
+        && !evict_oldest_connection(&mut cache, Some((user_id, device_id)))
+    {
+        // All slots are currently in use. Serve this request from a detached
+        // database-backed entry; never grow the cache or evict an active lock.
+        return Arc::new(Connection::new(db_cache));
+    }
+    if cache.len() >= MAX_CACHED_CONNECTIONS && !evict_oldest_connection(&mut cache, None) {
+        return Arc::new(Connection::new(db_cache));
+    }
     let entry = cache
         .entry(key)
         .or_insert_with(|| Arc::new(Connection::new(db_cache)));
@@ -449,32 +522,7 @@ pub async fn cleanup_expired_connections() {
     let now = UnixMillis::now().get() as i64;
     let cutoff = now - CONNECTION_EXPIRY_MS;
 
-    let expired_rows = sliding_sync_connections::table
-        .filter(sliding_sync_connections::updated_at.lt(cutoff))
-        .select((
-            sliding_sync_connections::user_id,
-            sliding_sync_connections::device_id,
-            sliding_sync_connections::conn_id,
-        ))
-        .load::<(String, String, String)>(&mut connect())
-        .await
-        .unwrap_or_default();
-
-    let expired_keys: HashSet<(OwnedUserId, OwnedDeviceId, Option<String>)> = expired_rows
-        .into_iter()
-        .filter_map(|(user_id, device_id, conn_id)| {
-            Some((
-                OwnedUserId::try_from(user_id).ok()?,
-                OwnedDeviceId::from(device_id.as_str()),
-                (!conn_id.is_empty()).then_some(conn_id),
-            ))
-        })
-        .collect();
-
-    CONNECTIONS
-        .lock()
-        .unwrap()
-        .retain(|key, _entry| !expired_keys.contains(key));
+    expire_memory_connections(&mut CONNECTIONS.lock().unwrap(), now);
 
     // Clean up database
     let _ = diesel::delete(
@@ -634,6 +682,183 @@ async fn update_connection<R>(
     }
 }
 
+/// Required-state delivery is part of a response's correctness. Unlike a
+/// best-effort cache refresh, an exhausted CAS retry must fail the response so
+/// its input cursor can be retried without acknowledging unsaved delivery.
+async fn update_required_state_cache<R>(
+    user: &UserId,
+    device: &DeviceId,
+    conn_id: &Option<String>,
+    mutate: impl Fn(&mut SlidingSyncCache) -> R,
+) -> AppResult<R> {
+    let key = connection_key(user, device, conn_id);
+    let entry = load_or_create_connection(&key.0, &key.1, &key.2).await;
+    let _write = entry.write.lock().await;
+    for _ in 0..MAX_CONNECTION_WRITE_ATTEMPTS {
+        let mut snapshot = entry.lock().unwrap().clone();
+        let result = mutate(&mut snapshot);
+        if let Some(version) = write_connection(&key, &snapshot).await? {
+            snapshot.db_version = Some(version);
+            *entry.lock().unwrap() = snapshot;
+            return Ok(result);
+        }
+        if !reload_connection(&key, &entry).await {
+            return Err(crate::AppError::internal(
+                "failed to reload sliding sync delivery state",
+            ));
+        }
+    }
+    Err(crate::AppError::internal(
+        "sliding sync connection changed; retry the request",
+    ))
+}
+
+fn required_state_request_config(request: &SyncEventsReqBody) -> Vec<u8> {
+    // Hash the merged request, never the mutable cache at response completion.
+    // Ranges/filters matter too: an old window must not prune a newer window's
+    // pending state or settle its snapshot refresh.
+    let config = serde_json::to_vec(&(&request.lists, &request.room_subscriptions))
+        .expect("sliding sync list and subscription configuration serializes");
+    crate::utils::hash_keys(std::iter::once(config))
+}
+
+fn merge_required_state(target: &mut RequiredStateMap, updates: &RequiredStateMap) {
+    for (room, types) in updates {
+        for (ty, keys) in types {
+            target
+                .entry(room.clone())
+                .or_default()
+                .entry(ty.clone())
+                .or_default()
+                .extend(keys.clone());
+        }
+    }
+}
+
+fn retain_required_state(target: &mut RequiredStateMap, requested: &RequiredStateMap) {
+    target.retain(|room, types| {
+        let Some(wanted) = requested.get(room) else {
+            return false;
+        };
+        types.retain(|ty, keys| {
+            let Some(wanted) = wanted.get(ty) else {
+                return false;
+            };
+            keys.retain(|key, _| wanted.contains_key(key));
+            !keys.is_empty()
+        });
+        !types.is_empty()
+    });
+}
+
+async fn acknowledge_required_state(
+    user: &UserId,
+    device: &DeviceId,
+    conn_id: &Option<String>,
+    token: Option<&str>,
+) -> AppResult<()> {
+    let Some(token) = token else {
+        return Ok(());
+    };
+    let entry = load_or_create_connection(&user.to_owned(), &device.to_owned(), conn_id).await;
+    if !entry
+        .lock()
+        .unwrap()
+        .pending_required_state
+        .contains_key(token)
+    {
+        return Ok(());
+    }
+    update_required_state_cache(user, device, conn_id, |cached| {
+        if let Some(delivered) = cached.pending_required_state.remove(token) {
+            merge_required_state(&mut cached.required_state_by_room, &delivered);
+            // Only this exact response is acknowledged. Other offers may have
+            // been prepared concurrently or lost in transit; replay is safe.
+            cached.pending_required_state.clear();
+        }
+    })
+    .await
+}
+
+async fn record_required_state(
+    user: &UserId,
+    device: &DeviceId,
+    conn_id: &Option<String>,
+    response: &mut SyncEventsResBody,
+    requested: &RequiredStateMap,
+    sent: &RequiredStateMap,
+    request_config: &[u8],
+    request_generation: Option<u64>,
+) -> AppResult<()> {
+    let entry = load_or_create_connection(&user.to_owned(), &device.to_owned(), conn_id).await;
+    {
+        let cached = entry.lock().unwrap();
+        if cached.required_state_config != request_config
+            || request_generation
+                .is_some_and(|generation| generation != cached.required_state_generation)
+        {
+            return Ok(());
+        }
+        if sent.is_empty()
+            && !cached.required_state_refresh
+            && cached.required_state.is_empty()
+            && cached.required_state_by_room == *requested
+        {
+            return Ok(());
+        }
+    }
+    let old_token = response.pos.clone();
+    let token = if sent.is_empty() {
+        old_token.clone()
+    } else {
+        // Reuse the parser's existing opaque window component. A fresh token
+        // prevents an older, same-position response from acknowledging states
+        // it never contained. Its list-window offer is moved together below.
+        let base = old_token
+            .split('_')
+            .filter(|part| !part.starts_with('w'))
+            .collect::<Vec<_>>()
+            .join("_");
+        format!("{base}_w{}", crate::utils::random_string(24))
+    };
+    let recorded = update_required_state_cache(user, device, conn_id, |cached| {
+        // A CAS rebase can reveal a request which changed configuration after
+        // this response started. Its refresh and pending offers must win.
+        if cached.required_state_config != request_config
+            || request_generation
+                .is_some_and(|generation| generation != cached.required_state_generation)
+        {
+            return false;
+        }
+        cached.required_state.clear();
+        retain_required_state(&mut cached.required_state_by_room, requested);
+        for offer in cached.pending_required_state.values_mut() {
+            retain_required_state(offer, requested);
+        }
+        cached
+            .pending_required_state
+            .retain(|_, offer| !offer.is_empty());
+        if !sent.is_empty() {
+            if cached.pending_required_state.len() >= 16 {
+                cached.pending_required_state.clear();
+            }
+            cached
+                .pending_required_state
+                .insert(token.clone(), sent.clone());
+            if let Some(window) = cached.pending_list_windows.remove(&old_token) {
+                cached.pending_list_windows.insert(token.clone(), window);
+            }
+        }
+        cached.required_state_refresh = false;
+        true
+    })
+    .await?;
+    if recorded {
+        response.pos = token;
+    }
+    Ok(())
+}
+
 /// Run connection cleanup at most once per hour.
 static LAST_CLEANUP: AtomicI64 = AtomicI64::new(0);
 
@@ -660,7 +885,36 @@ pub async fn sync_events(
     req_body: &SyncEventsReqBody,
     known_rooms: &KnownRooms,
 ) -> AppResult<SyncEventsResBody> {
-    sync_events_at_position(sender_id, device_id, since.into(), req_body, known_rooms).await
+    sync_events_at_position(
+        sender_id,
+        device_id,
+        since.into(),
+        req_body,
+        known_rooms,
+        None,
+    )
+    .await
+}
+
+/// Keep one request's configuration generation across response construction and
+/// the handler's optional second pass after long polling.
+pub async fn sync_events_for_request(
+    sender_id: &UserId,
+    device_id: &DeviceId,
+    since: impl Into<crate::event::SyncPosition>,
+    req_body: &SyncEventsReqBody,
+    known_rooms: &KnownRooms,
+    generation: u64,
+) -> AppResult<SyncEventsResBody> {
+    sync_events_at_position(
+        sender_id,
+        device_id,
+        since.into(),
+        req_body,
+        known_rooms,
+        Some(generation),
+    )
+    .await
 }
 
 async fn sync_events_at_position(
@@ -669,6 +923,7 @@ async fn sync_events_at_position(
     since: crate::event::SyncPosition,
     req_body: &SyncEventsReqBody,
     known_rooms: &KnownRooms,
+    request_generation: Option<u64>,
 ) -> AppResult<SyncEventsResBody> {
     let since_sn = since.event_sn;
     // Periodically clean up expired connections
@@ -676,6 +931,13 @@ async fn sync_events_at_position(
     // Another instance may have served this connection since this process last did --
     // including during the long poll that precedes a repeated call.
     refresh_connection(sender_id, device_id, &req_body.conn_id).await;
+    acknowledge_required_state(
+        sender_id,
+        device_id,
+        &req_body.conn_id,
+        since.original.as_deref(),
+    )
+    .await?;
     crate::membership::acknowledge_invite_delivery(sender_id, device_id, since.invite_batch)
         .await?;
     #[cfg(feature = "unstable-msc4494")]
@@ -879,7 +1141,21 @@ async fn sync_events_at_position(
         #[cfg(not(feature = "unstable-msc4262"))]
         let profiles_owe_snapshot = false;
 
-        if !profiles_owe_snapshot && !presence_enabled && !invites_owe_delivery && !lists_owe_update
+        let entry = load_or_create_connection(
+            &sender_id.to_owned(),
+            &device_id.to_owned(),
+            &req_body.conn_id,
+        )
+        .await;
+        let required_state_owed = {
+            let cached = entry.lock().unwrap();
+            cached.required_state_refresh || !cached.pending_required_state.is_empty()
+        };
+        if !profiles_owe_snapshot
+            && !presence_enabled
+            && !invites_owe_delivery
+            && !lists_owe_update
+            && !required_state_owed
         {
             return Ok(res);
         }
@@ -954,7 +1230,7 @@ async fn sync_events_at_position(
         (sent_users, initial_users, visible_users)
     };
 
-    res_body.rooms = process_rooms(
+    let (rooms, requested_state, sent_state) = process_rooms(
         sync_info,
         &invite_snapshot,
         &dm_rooms,
@@ -964,6 +1240,7 @@ async fn sync_events_at_position(
         &mut res_body,
     )
     .await?;
+    res_body.rooms = rooms;
 
     // Profile delivery becomes durable only after the complete response was built and is
     // accepted only when the client returns with this response token.
@@ -1013,6 +1290,17 @@ async fn sync_events_at_position(
     // Record positions only after the complete response and its invitation deliveries
     // succeeded. Count-only responses must not replace the client's last window.
     record_list_windows_sent(sender_id, device_id, &req_body.conn_id, &mut res_body).await;
+    record_required_state(
+        sender_id,
+        device_id,
+        &req_body.conn_id,
+        &mut res_body,
+        &requested_state,
+        &sent_state,
+        &required_state_request_config(req_body),
+        request_generation,
+    )
+    .await?;
     Ok(res_body)
 }
 
@@ -1079,9 +1367,13 @@ async fn record_list_windows_sent(
                 .pending_list_windows
                 .iter()
                 .find(|(token, offered)| {
-                    token
-                        .strip_prefix(&base)
-                        .is_some_and(|suffix| suffix.starts_with("_w"))
+                    // State delivery certifies this exact response payload.
+                    // Another response with the same list window must not
+                    // borrow its token and acknowledge state it never sent.
+                    !cached.pending_required_state.contains_key(*token)
+                        && token
+                            .strip_prefix(&base)
+                            .is_some_and(|suffix| suffix.starts_with("_w"))
                         && **offered == windows
                 })
                 .map(|(token, _)| token.clone())
@@ -1258,14 +1550,16 @@ async fn fetch_subscriptions(
             i64::MAX,
         ));
 
-        let limit = room.timeline_limit;
+        let limit = usize::try_from(room.timeline_limit)
+            .map_err(|_| crate::MatrixError::invalid_param("timeline_limit must not be negative"))?
+            .min(100);
 
         todo_room.required_state.extend(
             room.required_state
                 .iter()
                 .map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
         );
-        todo_room.timeline_limit = todo_room.timeline_limit.max(limit as usize);
+        todo_room.timeline_limit = todo_room.timeline_limit.max(limit);
         todo_room.include_heroes = todo_room.include_heroes || room.include_heroes.unwrap_or(false);
         todo_room.room_since_sn = todo_room.room_since_sn.min(
             known_rooms
@@ -1306,8 +1600,21 @@ async fn process_rooms(
     todo_rooms: &TodoRooms,
     known_rooms: &KnownRooms,
     response: &mut SyncEventsResBody,
-) -> AppResult<BTreeMap<OwnedRoomId, sync_events::v5::SyncRoom>> {
+) -> AppResult<(
+    BTreeMap<OwnedRoomId, sync_events::v5::SyncRoom>,
+    RequiredStateMap,
+    RequiredStateMap,
+)> {
     let mut rooms = BTreeMap::new();
+    let entry = load_or_create_connection(
+        &sender_id.to_owned(),
+        &device_id.to_owned(),
+        &req_body.conn_id,
+    )
+    .await;
+    let acknowledged = entry.lock().unwrap().required_state_by_room.clone();
+    let mut requested_state = RequiredStateMap::new();
+    let mut sent_state = RequiredStateMap::new();
     let receipts_enabled = req_body.extensions.receipts.enabled.unwrap_or(false);
 
     for (
@@ -1381,21 +1688,7 @@ async fn process_rooms(
         }
 
         let receipt_size = if receipts_enabled {
-            let last_private_read_update =
-                data::room::receipt::last_private_read_update_sn(sender_id, room_id)
-                    .await
-                    .unwrap_or_default()
-                    > *room_since_sn;
-
-            let private_read_event = if last_private_read_update {
-                crate::room::receipt::last_private_read(sender_id, room_id)
-                    .await
-                    .ok()
-            } else {
-                None
-            };
-
-            let mut receipts =
+            let receipts =
                 data::room::receipt::read_receipts(room_id, *room_since_sn, Some(sender_id))
                     .await?
                     .into_iter()
@@ -1407,10 +1700,6 @@ async fn process_rooms(
                         }
                     })
                     .collect::<Vec<_>>();
-
-            if let Some(private_read_event) = private_read_event {
-                receipts.push(private_read_event);
-            }
 
             let size = receipts.len();
 
@@ -1426,14 +1715,6 @@ async fn process_rooms(
         } else {
             0
         };
-
-        if room_since_sn != &0
-            && timeline.events.is_empty()
-            && invite_state.is_none()
-            && receipt_size == 0
-        {
-            continue;
-        }
 
         let prev_batch = IndexMap::first(&timeline.events).and_then(|(sn, _)| {
             if *sn == 0 {
@@ -1459,129 +1740,92 @@ async fn process_rooms(
             }
         }
 
-        let mut required_state_events = Vec::new();
+        let mut candidates = BTreeMap::new();
+        let mut full_state = None;
         let mut lazy_senders_collected = false;
-
-        for rs in required_state.iter() {
-            match (rs.0.clone(), rs.1.as_str()) {
-                // $LAZY: return member state for timeline event senders
-                (ref event_type, "$LAZY") if *event_type == StateEventType::RoomMember => {
+        for (event_type, key) in required_state {
+            let pdus: Vec<_> = match key.as_str() {
+                "$LAZY" if *event_type == StateEventType::RoomMember => {
                     if lazy_senders_collected {
                         continue;
                     }
                     lazy_senders_collected = true;
-
-                    let senders: HashSet<&UserId> = timeline
+                    let senders: BTreeSet<_> = timeline
                         .events
-                        .iter()
-                        .map(|(_, pdu)| pdu.sender.as_ref())
+                        .values()
+                        .map(|pdu| pdu.sender.clone())
                         .collect();
-
+                    let mut members = Vec::new();
                     for sender in senders.into_iter().take(100) {
-                        if let Ok(pdu) = room::get_state(
-                            room_id,
-                            &StateEventType::RoomMember,
-                            sender.as_str(),
-                            None,
-                        )
-                        .await
-                            && !is_required_state_send(
-                                sender_id.to_owned(),
-                                device_id.to_owned(),
-                                req_body.conn_id.clone(),
-                                pdu.event_sn,
-                            )
-                            .await
+                        if let Ok(pdu) =
+                            room::get_state(room_id, event_type, sender.as_str(), None).await
                         {
-                            mark_required_state_sent(
-                                sender_id.to_owned(),
-                                device_id.to_owned(),
-                                req_body.conn_id.clone(),
-                                pdu.event_sn,
-                            )
-                            .await;
-                            required_state_events
-                                .push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
+                            members.push(pdu);
                         }
                     }
+                    members
                 }
-                // * state key: return all state events of this type
-                (ref event_type, "*") => {
-                    if let Ok(frame_id) = room::get_frame_id(room_id, None).await
-                        && let Ok(full_state) = state::get_full_state(frame_id).await
+                "*" => {
+                    if full_state.is_none()
+                        && let Ok(frame) = room::get_frame_id(room_id, None).await
                     {
-                        for ((ty, _sk), pdu) in &full_state {
-                            if ty == event_type
-                                && !is_required_state_send(
-                                    sender_id.to_owned(),
-                                    device_id.to_owned(),
-                                    req_body.conn_id.clone(),
-                                    pdu.event_sn,
-                                )
-                                .await
-                            {
-                                mark_required_state_sent(
-                                    sender_id.to_owned(),
-                                    device_id.to_owned(),
-                                    req_body.conn_id.clone(),
-                                    pdu.event_sn,
-                                )
-                                .await;
-                                required_state_events
-                                    .push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
-                            }
-                        }
+                        full_state = state::get_full_state(frame).await.ok();
                     }
+                    full_state
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(|state| state.iter())
+                        .filter(|((ty, _), _)| ty == event_type)
+                        .map(|(_, pdu)| pdu.clone())
+                        .collect()
                 }
-                // $ME: substitute with the requester's user_id
-                (ref event_type, "$ME") => {
-                    if let Ok(pdu) =
-                        room::get_state(room_id, event_type, sender_id.as_str(), None).await
-                        && !is_required_state_send(
-                            sender_id.to_owned(),
-                            device_id.to_owned(),
-                            req_body.conn_id.clone(),
-                            pdu.event_sn,
-                        )
-                        .await
-                    {
-                        mark_required_state_sent(
-                            sender_id.to_owned(),
-                            device_id.to_owned(),
-                            req_body.conn_id.clone(),
-                            pdu.event_sn,
-                        )
-                        .await;
-                        required_state_events
-                            .push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
-                    }
-                }
-                // Specific state key
-                (ref event_type, state_key) => {
-                    if let Ok(pdu) = room::get_state(room_id, event_type, state_key, None).await
-                        && !is_required_state_send(
-                            sender_id.to_owned(),
-                            device_id.to_owned(),
-                            req_body.conn_id.clone(),
-                            pdu.event_sn,
-                        )
-                        .await
-                    {
-                        mark_required_state_sent(
-                            sender_id.to_owned(),
-                            device_id.to_owned(),
-                            req_body.conn_id.clone(),
-                            pdu.event_sn,
-                        )
-                        .await;
-                        required_state_events
-                            .push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
-                    }
+                "$ME" => room::get_state(room_id, event_type, sender_id.as_str(), None)
+                    .await
+                    .into_iter()
+                    .collect(),
+                key => room::get_state(room_id, event_type, key, None)
+                    .await
+                    .into_iter()
+                    .collect(),
+            };
+            for pdu in pdus {
+                if let Some(state_key) = pdu.state_key.clone() {
+                    candidates.insert((pdu.event_ty.to_string(), state_key), pdu);
                 }
             }
         }
-
-        let required_state = required_state_events;
+        let mut required_state = Vec::new();
+        for ((ty, key), pdu) in candidates {
+            requested_state
+                .entry(room_id.clone())
+                .or_default()
+                .entry(ty.clone())
+                .or_default()
+                .insert(key.clone(), pdu.event_sn);
+            if acknowledged
+                .get(room_id)
+                .and_then(|types| types.get(&ty))
+                .and_then(|keys| keys.get(&key))
+                == Some(&pdu.event_sn)
+            {
+                continue;
+            }
+            sent_state
+                .entry(room_id.clone())
+                .or_default()
+                .entry(ty)
+                .or_default()
+                .insert(key, pdu.event_sn);
+            required_state.push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
+        }
+        if *room_since_sn != 0
+            && timeline.events.is_empty()
+            && invite_state.is_none()
+            && receipt_size == 0
+            && required_state.is_empty()
+        {
+            continue;
+        }
 
         // Heroes - only compute when requested or when room name isn't set
         let room_name = room::get_name(room_id).await.ok();
@@ -1685,7 +1929,7 @@ async fn process_rooms(
             },
         );
     }
-    Ok(rooms)
+    Ok((rooms, requested_state, sent_state))
 }
 async fn collect_account_data(
     SyncInfo {
@@ -1869,15 +2113,32 @@ pub async fn update_sync_request_with_cache(
     device_id: OwnedDeviceId,
     req_body: &mut sync_events::v5::SyncEventsReqBody,
 ) -> (KnownRooms, BTreeMap<String, usize>, ListWindows) {
+    let (known, counts, windows, _) =
+        update_sync_request_with_cache_and_generation(user_id, device_id, req_body).await;
+    (known, counts, windows)
+}
+
+pub async fn update_sync_request_with_cache_and_generation(
+    user_id: OwnedUserId,
+    device_id: OwnedDeviceId,
+    req_body: &mut sync_events::v5::SyncEventsReqBody,
+) -> (KnownRooms, BTreeMap<String, usize>, ListWindows, u64) {
     refresh_connection(&user_id, &device_id, &req_body.conn_id).await;
     // Sticky parameters are merged into a fresh copy of the request on every attempt, so a
     // write rebased onto another instance's newer cache merges against that cache.
     let original = req_body.clone();
-    let (merged, known, list_counts, list_windows) =
+    let (merged, known, list_counts, list_windows, generation) =
         update_connection(&user_id, &device_id, &original.conn_id, |cached| {
             #[cfg(feature = "unstable-msc4494")]
             require_list_window_acknowledgements(cached);
             let mut req_body = original.clone();
+            let mut reset_required_state = false;
+
+            if !cached.required_state.is_empty() {
+                cached.required_state.clear();
+                cached.required_state_refresh = true;
+                reset_required_state = true;
+            }
 
             for (list_id, list) in &mut req_body.lists {
                 if let Some(cached_list) = cached.lists.get(list_id) {
@@ -1903,12 +2164,41 @@ pub async fn update_sync_request_with_cache(
                         (..) => {}
                     }
                 }
+                if cached.lists.get(list_id).is_none_or(|previous| {
+                    previous.room_details.required_state != list.room_details.required_state
+                }) {
+                    cached.required_state_by_room.clear();
+                    cached.pending_required_state.clear();
+                    cached.required_state_refresh = true;
+                    reset_required_state = true;
+                }
                 cached.lists.insert(list_id.clone(), list.clone());
             }
 
             // Remove unsubscribed rooms from cache
             for room_id in &req_body.unsubscribe_rooms {
-                cached.subscriptions.remove(room_id);
+                if cached.subscriptions.remove(room_id).is_some() {
+                    reset_required_state = true;
+                }
+                cached.required_state_by_room.remove(room_id);
+                for pending in cached.pending_required_state.values_mut() {
+                    pending.remove(room_id);
+                }
+            }
+
+            for (room_id, subscription) in &req_body.room_subscriptions {
+                if cached
+                    .subscriptions
+                    .get(room_id)
+                    .is_none_or(|previous| previous.required_state != subscription.required_state)
+                {
+                    cached.required_state_by_room.remove(room_id);
+                    for pending in cached.pending_required_state.values_mut() {
+                        pending.remove(room_id);
+                    }
+                    cached.required_state_refresh = true;
+                    reset_required_state = true;
+                }
             }
 
             cached
@@ -1917,6 +2207,14 @@ pub async fn update_sync_request_with_cache(
             req_body
                 .room_subscriptions
                 .extend(cached.subscriptions.clone());
+
+            let required_config = required_state_request_config(&req_body);
+            if cached.required_state_config != required_config || reset_required_state {
+                cached.required_state_config = required_config;
+                cached.required_state_generation =
+                    cached.required_state_generation.saturating_add(1);
+                cached.required_state_refresh = true;
+            }
 
             req_body.extensions.e2ee.enabled = req_body
                 .extensions
@@ -2009,11 +2307,17 @@ pub async fn update_sync_request_with_cache(
             let known = cached.known_rooms.clone();
             let list_counts = cached.list_counts.clone();
             let list_windows = cached.list_windows.clone();
-            (req_body, known, list_counts, list_windows)
+            (
+                req_body,
+                known,
+                list_counts,
+                list_windows,
+                cached.required_state_generation,
+            )
         })
         .await;
     *req_body = merged;
-    (known, list_counts, list_windows)
+    (known, list_counts, list_windows, generation)
 }
 
 pub async fn update_sync_list_counts(
@@ -2065,28 +2369,6 @@ pub async fn update_sync_known_rooms(
         }
     })
     .await;
-}
-
-pub async fn mark_required_state_sent(
-    user_id: OwnedUserId,
-    device_id: OwnedDeviceId,
-    conn_id: Option<String>,
-    event_sn: Seqnum,
-) {
-    update_connection(&user_id, &device_id, &conn_id, |cached| {
-        cached.required_state.insert(event_sn);
-    })
-    .await;
-}
-pub async fn is_required_state_send(
-    user_id: OwnedUserId,
-    device_id: OwnedDeviceId,
-    conn_id: Option<String>,
-    event_sn: Seqnum,
-) -> bool {
-    let entry = load_or_create_connection(&user_id, &device_id, &conn_id).await;
-    let cached = entry.lock().unwrap();
-    cached.required_state.contains(&event_sn)
 }
 
 /// Of `rooms`, those whose profiles this connection has not been sent yet.
@@ -2413,7 +2695,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(rooms.is_empty());
+        assert!(rooms.0.is_empty());
         assert!(response.extensions.account_data.rooms.is_empty());
     }
 
@@ -3229,7 +3511,8 @@ mod tests {
             &mut response,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(
             serde_json::to_value(response.rooms[&room].invite_state.as_ref().unwrap()).unwrap(),
             serde_json::to_value(&old_state).unwrap(),

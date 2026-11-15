@@ -105,7 +105,11 @@ pub struct SyncEventsReqBody {
     ///
     /// Limitation: it must not contain more than 16 chars, due to it being
     /// required with every request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_connection_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub conn_id: Option<String>,
 
     /// Allows clients to know what request params reached the server,
@@ -408,11 +412,35 @@ pub struct RoomSubscription {
     pub required_state: Vec<(StateEventType, String)>,
 
     /// The maximum number of timeline events to return per room.
+    #[serde(deserialize_with = "deserialize_subscription_timeline_limit")]
     pub timeline_limit: i64,
 
     /// Include the room heroes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_heroes: Option<bool>,
+}
+
+fn deserialize_connection_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let id = Option::<String>::deserialize(deserializer)?;
+    if id.as_ref().is_some_and(|id| id.chars().count() > 16) {
+        return Err(D::Error::custom(
+            "conn_id must contain at most 16 characters",
+        ));
+    }
+    // The database represents both missing and empty IDs as the same key.
+    Ok(id.filter(|id| !id.is_empty()))
+}
+
+fn deserialize_subscription_timeline_limit<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<i64, D::Error> {
+    let limit = i64::deserialize(deserializer)?;
+    if limit < 0 {
+        return Err(D::Error::custom("timeline_limit must not be negative"));
+    }
+    Ok(limit)
 }
 
 /// Single entry for a room-related read receipt configuration in

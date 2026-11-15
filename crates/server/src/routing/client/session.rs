@@ -1377,24 +1377,7 @@ async fn build_sso_redirect_url(
 }
 
 fn sso_redirect_allowed(client_url: &url::Url, allowed_origins: &[String]) -> bool {
-    allowed_origins.iter().any(|allowed| {
-        let Ok(allowed) = url::Url::parse(allowed) else {
-            return false;
-        };
-        if allowed.path() != "/" || allowed.query().is_some() || allowed.fragment().is_some() {
-            return false;
-        }
-        if client_url.scheme() != allowed.scheme() || client_url.host() != allowed.host() {
-            return false;
-        }
-        let loopback = matches!(client_url.host_str(), Some("127.0.0.1" | "localhost"))
-            || matches!(client_url.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
-        if loopback && allowed.port().is_none() {
-            true
-        } else {
-            client_url.port_or_known_default() == allowed.port_or_known_default()
-        }
-    })
+    config::sso_redirect_allowed(client_url, allowed_origins)
 }
 
 fn build_delegated_authorization_url(

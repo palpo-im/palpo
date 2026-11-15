@@ -36,6 +36,8 @@ pub mod guard;
 mod pdu_batch;
 #[cfg(test)]
 mod pdu_batch_tests;
+#[cfg(test)]
+mod push_authorization_tests;
 pub mod resolver;
 
 const SELECT_PRESENCE_LIMIT: usize = 256;
@@ -726,6 +728,12 @@ async fn send_events_inner(
                 if pdu.unsigned.contains_key("redacted_because") {
                     continue;
                 }
+                if !crate::user::pusher::may_receive_push(user_id, &pdu)
+                    .await
+                    .map_err(|error| (kind.clone(), error))?
+                {
+                    continue;
+                }
                 let pusher = match data::user::pusher::get_pusher_registration(user_id, pushkey)
                     .await
                     .map_err(|e| {
@@ -752,7 +760,7 @@ async fn send_events_inner(
 
                 crate::user::pusher::send_push_notice(
                     user_id,
-                    notify_summary.all_unread_count(),
+                    notify_summary.all_notification_count(),
                     &pusher,
                     rules_for_user,
                     &pdu,

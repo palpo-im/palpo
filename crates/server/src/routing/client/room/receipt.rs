@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use salvo::oapi::extract::JsonBody;
 use salvo::prelude::*;
 
@@ -7,12 +5,10 @@ use crate::core::UnixMillis;
 use crate::core::events::RoomAccountDataEventType;
 use crate::core::events::fully_read::{FullyReadEvent, FullyReadEventContent};
 use crate::core::events::receipt::{
-    CreateReceiptReqBody, Receipt, ReceiptEvent, ReceiptEventContent, ReceiptThread, ReceiptType,
-    SendReceiptReqArgs,
+    CreateReceiptReqBody, Receipt, ReceiptThread, ReceiptType, SendReceiptReqArgs,
 };
 use crate::core::presence::PresenceState;
-use crate::room::push_action;
-use crate::{AppError, AuthArgs, DepotExt, EmptyResult, empty_ok, room};
+use crate::{AuthArgs, DepotExt, EmptyResult, MatrixError, empty_ok, room};
 
 /// #POST /_matrix/client/r0/rooms/{room_id}/receipt/{receipt_type}/{event_id}
 /// Sets private read marker and public read receipt EDU.
@@ -26,13 +22,25 @@ pub(super) async fn send_receipt(
     let authed = depot.authed_info()?;
     let sender_id = authed.user_id();
     let body = body.into_inner();
-    let thread_id = match &body.thread {
-        ReceiptThread::Thread(id) => Some(&**id),
-        _ => None,
-    };
-
+    if !matches!(
+        args.receipt_type,
+        ReceiptType::Read | ReceiptType::ReadPrivate | ReceiptType::FullyRead
+    ) {
+        return Err(MatrixError::invalid_param("Unsupported receipt type.").into());
+    }
+    if args.receipt_type == ReceiptType::FullyRead && body.thread != ReceiptThread::Unthreaded {
+        return Err(
+            MatrixError::invalid_param("Fully-read markers cannot have a thread ID.").into(),
+        );
+    }
+    let event_sn = room::receipt::validate_client_event(
+        sender_id,
+        &args.room_id,
+        &args.event_id,
+        Some(&body.thread),
+    )
+    .await?;
     crate::user::ping_presence(sender_id, &PresenceState::Online).await?;
-    let event_sn = crate::event::get_event_sn(&args.event_id).await?;
     match args.receipt_type {
         ReceiptType::FullyRead => {
             let fully_read_event = FullyReadEvent {
@@ -47,56 +55,26 @@ pub(super) async fn send_receipt(
                 serde_json::to_value(fully_read_event.content).expect("to json value always works"),
             )
             .await?;
-            push_action::remove_actions_for_room(sender_id, &args.room_id).await?;
         }
-        ReceiptType::Read => {
-            let mut user_receipts = BTreeMap::new();
-            user_receipts.insert(
-                sender_id.to_owned(),
-                Receipt {
+        ReceiptType::Read | ReceiptType::ReadPrivate => {
+            room::receipt::record_client_receipt(
+                sender_id,
+                &args.room_id,
+                &args.event_id,
+                event_sn,
+                args.receipt_type,
+                &Receipt {
                     ts: Some(UnixMillis::now()),
                     thread: body.thread.clone(),
                 },
-            );
-            let mut receipts = BTreeMap::new();
-            receipts.insert(ReceiptType::Read, user_receipts);
-
-            let mut receipt_content = BTreeMap::new();
-            receipt_content.insert(args.event_id.clone(), receipts);
-
-            room::receipt::update_read(
-                sender_id,
-                &args.room_id,
-                &ReceiptEvent {
-                    content: ReceiptEventContent(receipt_content),
-                    room_id: args.room_id.clone(),
-                },
-                true,
             )
             .await?;
-            push_action::remove_actions_until(sender_id, &args.room_id, event_sn, thread_id)
-                .await?;
         }
-        ReceiptType::ReadPrivate => {
-            // let count = timeline::get_event_sn(&args.event_id)?
-            //     .ok_or(MatrixError::invalid_param("Event does not exist."))?;
-            crate::data::room::receipt::set_private_read(
-                &args.room_id,
-                sender_id,
-                &args.event_id,
-                event_sn,
-            )
-            .await?;
-            push_action::remove_actions_until(sender_id, &args.room_id, event_sn, thread_id)
-                .await?;
-        }
-        _ => return Err(AppError::internal("unsupported receipt type")),
-    }
-    if matches!(
-        &args.receipt_type,
-        ReceiptType::Read | ReceiptType::ReadPrivate
-    ) {
-        push_action::refresh_notify_summary(sender_id, &args.room_id).await?;
+        _ => unreachable!("receipt type was validated before any writes"),
     }
     empty_ok()
 }
+
+#[cfg(test)]
+#[path = "receipt_review_tests.rs"]
+mod review_tests;
