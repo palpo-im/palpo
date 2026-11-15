@@ -182,6 +182,7 @@ salvo = { workspace = true, features = [
     "sse",
     "size-limiter",
 ] }
+salvo_core = { workspace = true }
 sanitize-filename = { workspace = true }
 scheduled-thread-pool = { workspace = true }
 secrecy = { workspace = true }

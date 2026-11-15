@@ -3798,6 +3798,7 @@ dependencies = [
  "rustls",
  "rustyline-async",
  "salvo",
+ "salvo_core",
  "sanitize-filename",
  "scheduled-thread-pool",
  "secrecy",
