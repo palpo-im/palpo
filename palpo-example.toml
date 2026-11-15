@@ -1396,6 +1396,15 @@
 #
 # default_provider = None (first alphabetically)
 
+# Trusted Matrix clients allowed to receive a local OIDC SSO login token.
+# HTTP(S) entries must be origins, for example "https://chat.example.org".
+# A loopback origin without a port permits ephemeral client ports.
+# Native clients must register their complete callback URI, for example
+# "element://vector/webapp"; its path must match exactly. Query parameters
+# may carry per-login client state. Unknown destinations are rejected.
+#
+# sso_allowed_redirect_origins = []
+
 # Auto-create new users on first login
 #
 # When true: New accounts created automatically

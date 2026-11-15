@@ -247,7 +247,14 @@ pub async fn update_joined_servers(room_id: &RoomId) -> AppResult<()> {
 }
 pub async fn get_our_real_users(room_id: &RoomId) -> AppResult<Vec<OwnedUserId>> {
     room_users::table
+        .inner_join(users::table.on(users::id.eq(room_users::user_id)))
         .filter(room_users::room_id.eq(room_id))
+        .filter(room_users::membership.eq("join"))
+        .filter(users::is_local.eq(true))
+        .filter(users::server_name.eq(config::server_name()))
+        .filter(users::deactivated_at.is_null())
+        .filter(users::locked_at.is_null())
+        .filter(users::suspended_at.is_null())
         .select(room_users::user_id)
         .load::<OwnedUserId>(&mut crate::data::db())
         .await

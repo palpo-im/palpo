@@ -1375,7 +1375,7 @@ async fn load_timeline_with_backfilled_history(
     until: BatchToken,
     filter: Option<&RoomEventFilter>,
 ) -> AppResult<TimelineData> {
-    let limit = filter.and_then(|f| f.limit).unwrap_or(10);
+    let limit = filter.and_then(|f| f.limit).unwrap_or(10).min(100);
     let mut timeline_pdus = timeline::topolo::load_pdus_backward_captured(
         Some(user_id),
         room_id,
@@ -1423,7 +1423,7 @@ pub(crate) async fn load_timeline(
         )
         .await;
     }
-    let limit = filter.and_then(|f| f.limit).unwrap_or(10);
+    let limit = filter.and_then(|f| f.limit).unwrap_or(10).min(100);
     let mut is_backward = false;
     let mut timeline_pdus = if let Some(since_tk) = since_tk {
         if let Some(until_tk) = until_tk {

@@ -50,6 +50,17 @@ pub struct OidcConfig {
     /// default: None (first alphabetically)
     pub default_provider: Option<String>,
 
+    /// Trusted Matrix clients allowed to receive a local OIDC SSO login token.
+    /// HTTP(S) entries must be origins, for example "https://chat.example.org".
+    /// A loopback origin without a port permits ephemeral client ports.
+    /// Native clients must register their complete callback URI, for example
+    /// "element://vector/webapp"; its path must match exactly. Query parameters
+    /// may carry per-login client state. Unknown destinations are rejected.
+    ///
+    /// default: []
+    #[serde(default)]
+    pub sso_allowed_redirect_origins: Vec<String>,
+
     /// Auto-create new users on first login
     ///
     /// When true: New accounts created automatically
@@ -120,6 +131,56 @@ pub struct OidcConfig {
     ///
     /// example: "https://auth.example.com/"
     pub mas_issuer: Option<String>,
+}
+
+/// Match an explicitly trusted SSO client. HTTP origins trust the client at
+/// every path; native applications register an exact callback path instead of
+/// granting an entire custom scheme. Never match opaque or credentialed URLs.
+pub(crate) fn sso_redirect_allowed(client: &url::Url, allowed: &[String]) -> bool {
+    if !client.username().is_empty() || client.password().is_some() || client.host().is_none() {
+        return false;
+    }
+    allowed.iter().any(|entry| {
+        let Ok(trusted) = url::Url::parse(entry) else {
+            return false;
+        };
+        if !trusted.username().is_empty()
+            || trusted.password().is_some()
+            || trusted.host().is_none()
+            || trusted.query().is_some()
+            || trusted.fragment().is_some()
+            || client.scheme() != trusted.scheme()
+            || client.host() != trusted.host()
+        {
+            return false;
+        }
+        if matches!(trusted.scheme(), "http" | "https") {
+            if trusted.path() != "/" {
+                return false;
+            }
+            let loopback = matches!(client.host_str(), Some("127.0.0.1" | "localhost"))
+                || matches!(client.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
+            // Url normalizes explicit :80/:443 to no port. Inspect the
+            // configured authority before granting the ephemeral-port exception.
+            // Non-origin spellings that Uri cannot parse do not get a wildcard.
+            let portless_loopback = loopback
+                && entry
+                    .parse::<salvo::http::uri::Uri>()
+                    .ok()
+                    .is_some_and(|uri| {
+                        uri.authority()
+                            .is_some_and(|authority| authority.port().is_none())
+                    });
+            portless_loopback || client.port_or_known_default() == trusted.port_or_known_default()
+        } else {
+            !matches!(
+                trusted.scheme(),
+                "file" | "javascript" | "data" | "blob" | "about"
+            ) && client.path() == trusted.path()
+                && client.port() == trusted.port()
+                && client.fragment().is_none()
+        }
+    })
 }
 
 #[derive(Clone, Deserialize)]
@@ -221,4 +282,99 @@ fn default_scopes() -> Vec<String> {
         "email".to_string(),
         "profile".to_string(),
     ]
+}
+
+#[cfg(test)]
+mod sso_redirect_policy_tests {
+    fn accepts(origin: &str, destination: &str) -> bool {
+        super::sso_redirect_allowed(&url::Url::parse(destination).unwrap(), &[origin.to_owned()])
+    }
+
+    #[test]
+    fn explicit_loopback_ports_preserve_default_port_restrictions() {
+        for (origin, destination, other_port) in [
+            (
+                "http://127.0.0.1:80",
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:49152/callback",
+            ),
+            (
+                "http://localhost:80",
+                "http://localhost/callback",
+                "http://localhost:49152/callback",
+            ),
+            (
+                "http://[::1]:80",
+                "http://[::1]/callback",
+                "http://[::1]:49152/callback",
+            ),
+            (
+                "https://127.0.0.1:443",
+                "https://127.0.0.1/callback",
+                "https://127.0.0.1:49152/callback",
+            ),
+            (
+                "https://localhost:443",
+                "https://localhost/callback",
+                "https://localhost:49152/callback",
+            ),
+            (
+                "https://[::1]:443",
+                "https://[::1]/callback",
+                "https://[::1]:49152/callback",
+            ),
+            (
+                "http://127.0.0.1:8080",
+                "http://127.0.0.1:8080/callback",
+                "http://127.0.0.1/callback",
+            ),
+            (
+                "http://[::1]:8080",
+                "http://[::1]:8080/callback",
+                "http://[::1]/callback",
+            ),
+        ] {
+            assert!(
+                accepts(origin, destination),
+                "{origin} must accept {destination}"
+            );
+            assert!(
+                !accepts(origin, other_port),
+                "{origin} must reject {other_port}"
+            );
+        }
+    }
+
+    #[test]
+    fn portless_loopback_and_non_loopback_origins_keep_their_scope() {
+        for origin in [
+            "http://127.0.0.1",
+            "http://localhost",
+            "http://[::1]",
+            "https://127.0.0.1",
+            "https://localhost",
+            "https://[::1]",
+        ] {
+            assert!(
+                accepts(origin, &format!("{origin}:49152/callback")),
+                "{origin}"
+            );
+        }
+        for origin in ["http://client.example", "https://client.example"] {
+            assert!(accepts(origin, &format!("{origin}/callback")), "{origin}");
+            assert!(
+                !accepts(origin, &format!("{origin}:49152/callback")),
+                "{origin}"
+            );
+        }
+        // An explicit default port must also stay strict when zero-padded.
+        assert!(!accepts(
+            "http://127.0.0.1:00080",
+            "http://127.0.0.1:49152/callback"
+        ));
+        assert!(!accepts(
+            "https://[::1]:00443",
+            "https://[::1]:49152/callback"
+        ));
+    }
 }

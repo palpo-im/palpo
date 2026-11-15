@@ -450,68 +450,6 @@ async fn append_pdu_fenced(
         .await?;
     }
 
-    let sync_pdu = pdu.to_sync_room_event_without_transaction_id();
-    let mut notifies = Vec::new();
-    let mut highlights = Vec::new();
-
-    // Fetch power levels and the member count once for the room, outside the per-user loop
-    let power_levels = crate::room::get_power_levels(pdu.room_id()).await.ok();
-    let member_count = crate::room::joined_member_count(pdu.room_id()).await?;
-
-    for user_id in super::get_our_real_users(&pdu.room_id).await?.iter() {
-        // Don't notify the user of their own events
-        if user_id == &pdu.sender {
-            continue;
-        }
-
-        let rules_for_user = crate::user::get_push_rules(user_id).await?.global;
-
-        let mut highlight = false;
-        let mut notify = false;
-
-        if let Some(power_levels) = &power_levels {
-            for action in data::user::pusher::get_actions(
-                user_id,
-                &rules_for_user,
-                power_levels,
-                &sync_pdu,
-                &pdu.room_id,
-                member_count,
-            )
-            .await?
-            {
-                match action {
-                    Action::Notify => notify = true,
-                    Action::SetTweak(Tweak::Highlight(HighlightTweakValue::Yes)) => {
-                        highlight = true;
-                    }
-                    _ => {}
-                };
-            }
-        }
-
-        if notify {
-            notifies.push(user_id.clone());
-        }
-        if highlight {
-            highlights.push(user_id.clone());
-        }
-
-        if let Err(e) =
-            push_action::upsert_push_action(&pdu.room_id, &pdu.event_id, user_id, notify, highlight)
-                .await
-        {
-            error!("failed to upsert event push action: {}", e);
-        }
-
-        for push_key in data::user::pusher::get_push_keys(user_id).await? {
-            crate::sending::send_push_pdu(&pdu.event_id, user_id, push_key).await?;
-        }
-    }
-
-    // Refresh notification summary once after processing all users
-    push_action::refresh_notify_summary(&pdu.sender, &pdu.room_id).await?;
-
     match pdu.event_ty {
         TimelineEventType::RoomRedaction => {
             if let Some(redact_id) = &pdu.redacts {
@@ -727,10 +665,73 @@ async fn append_pdu_fenced(
         crate::event::sticky::reevaluate_soft_failed_later(pdu.room_id.clone());
     }
 
-    if let Err(e) =
-        push_action::increment_notification_counts(&pdu.event_id, notifies, highlights).await
+    // Publish membership and the event's visibility frame before evaluating or
+    // waking push work. In particular, a new invitation must be current when
+    // the worker validates its target, and the PDU must already be readable.
+    // Use the same bounded relation resolver as receipt validation, including
+    // indirect references/reactions. Do this once before per-recipient actions.
+    let thread_root = super::receipt::event_thread_root(pdu).await?;
+    diesel::update(event_points::table.find(&pdu.event_id))
+        .set(event_points::thread_id.eq(thread_root))
+        .execute(&mut crate::data::db())
+        .await?;
+    let sync_pdu = pdu.to_sync_room_event_without_transaction_id();
+
+    // Fetch power levels and the member count once for the room, outside the per-user loop
+    let power_levels = crate::room::get_power_levels(pdu.room_id()).await.ok();
+    let member_count = crate::room::joined_member_count(pdu.room_id()).await?;
+
+    let mut recipients = super::get_our_real_users(&pdu.room_id).await?;
+    // Invited users do not receive ordinary room events. Only the exact local
+    // target of this newly published invitation is an additional candidate.
+    if let Some(target) = crate::user::pusher::local_invite_target(pdu)
+        && !recipients.contains(&target)
     {
-        error!("failed to increment notification counts: {}", e);
+        recipients.push(target);
+    }
+    for user_id in &recipients {
+        if !crate::user::pusher::may_receive_push(user_id, pdu).await? {
+            continue;
+        }
+
+        let rules_for_user = crate::user::get_push_rules(user_id).await?.global;
+
+        let mut highlight = false;
+        let mut notify = false;
+
+        if let Some(power_levels) = &power_levels {
+            for action in data::user::pusher::get_actions(
+                user_id,
+                &rules_for_user,
+                power_levels,
+                &sync_pdu,
+                &pdu.room_id,
+                member_count,
+            )
+            .await?
+            {
+                match action {
+                    Action::Notify => notify = true,
+                    Action::SetTweak(Tweak::Highlight(HighlightTweakValue::Yes)) => {
+                        highlight = true;
+                    }
+                    _ => {}
+                };
+            }
+        }
+
+        if let Err(e) =
+            push_action::upsert_push_action(&pdu.room_id, &pdu.event_id, user_id, notify, highlight)
+                .await
+        {
+            error!("failed to upsert event push action: {}", e);
+        }
+
+        if notify {
+            for push_key in data::user::pusher::get_push_keys(user_id).await? {
+                crate::sending::send_push_pdu(&pdu.event_id, user_id, push_key).await?;
+            }
+        }
     }
 
     let all_appservices = crate::appservice::all().await?;

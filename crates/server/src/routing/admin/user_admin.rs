@@ -25,6 +25,9 @@ use crate::{
     user, utils,
 };
 
+#[cfg(test)]
+mod list_tests;
+
 // ============================================================================
 // Response/Request Types
 // ============================================================================
@@ -75,6 +78,13 @@ pub struct ExternalIdInfo {
     pub external_id: String,
 }
 
+/// Keep explicit null distinct from an omitted profile field.
+fn present_profile_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
 /// Request body for PUT /v2/users/{user_id}
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PutUserReqBody {
@@ -82,10 +92,10 @@ pub struct PutUserReqBody {
     pub password: Option<String>,
     #[serde(default)]
     pub logout_devices: Option<bool>,
-    #[serde(default)]
-    pub displayname: Option<String>,
-    #[serde(default)]
-    pub avatar_url: Option<String>,
+    #[serde(default, deserialize_with = "present_profile_string")]
+    pub displayname: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present_profile_string")]
+    pub avatar_url: Option<Option<String>>,
     #[serde(default)]
     pub threepids: Option<Vec<ThreepidInfo>>,
     #[serde(default)]
@@ -321,9 +331,8 @@ async fn build_user_info(user_id: &UserId) -> crate::AppResult<UserInfoV2> {
 async fn build_users_list(
     filter: &data::user::ListUsersFilter,
 ) -> crate::AppResult<UsersListResponse> {
+    let (from, _) = filter.pagination()?;
     let (users, total) = data::user::list_users(filter).await?;
-    let limit = filter.limit.unwrap_or(100) as usize;
-    let from = filter.from.unwrap_or(0) as usize;
 
     let mut user_infos: Vec<UserInfoV2> = Vec::new();
     for db_user in users.into_iter() {
@@ -351,8 +360,9 @@ async fn build_users_list(
         });
     }
 
-    let next_token = if user_infos.len() >= limit {
-        Some((from + user_infos.len()).to_string())
+    let next = from.saturating_add(user_infos.len() as i64);
+    let next_token = if !user_infos.is_empty() && next < total {
+        Some(next.to_string())
     } else {
         None
     };
@@ -417,7 +427,11 @@ pub async fn put_user_v2(
 
     // Update display name
     if let Some(display_name) = &body.displayname {
-        data::user::set_display_name(&user_id, display_name).await?;
+        user::profile::set_display_name(
+            &user_id,
+            display_name.as_deref().filter(|name| !name.is_empty()),
+        )
+        .await?;
     }
 
     // Update threepids
@@ -431,8 +445,8 @@ pub async fn put_user_v2(
 
     // Update avatar
     if let Some(avatar_url) = &body.avatar_url {
-        let mxc_uri: &MxcUri = avatar_url.as_str().into();
-        data::user::set_avatar_url(&user_id, mxc_uri).await?;
+        user::profile::set_admin_avatar(&user_id, avatar_url.as_deref().unwrap_or_default())
+            .await?;
     }
 
     // Update admin status
@@ -496,7 +510,12 @@ pub async fn list_users_v2(
         limit: limit.into_inner(),
         name: name_filter,
         guests: guests.into_inner(),
-        deactivated: deactivated.into_inner(),
+        // V2's flag includes deactivated users, rather than selecting only them.
+        deactivated: if deactivated.into_inner().unwrap_or(false) {
+            None
+        } else {
+            Some(false)
+        },
         admins: admins.into_inner(),
         user_types: None,
         order_by: order_by.into_inner(),
@@ -508,7 +527,7 @@ pub async fn list_users_v2(
 
 /// GET /_synapse/admin/v3/users
 ///
-/// Same as v2 but uses not_deactivated parameter instead of deactivated
+/// V3 uses a three-way deactivated filter (absent means both states).
 #[endpoint]
 pub async fn list_users_v3(
     from: QueryParam<i64, false>,
@@ -516,17 +535,17 @@ pub async fn list_users_v3(
     user_id: QueryParam<String, false>,
     name: QueryParam<String, false>,
     guests: QueryParam<bool, false>,
+    deactivated: QueryParam<bool, false>,
     not_deactivated: QueryParam<bool, false>,
     admins: QueryParam<bool, false>,
     order_by: QueryParam<String, false>,
     dir: QueryParam<String, false>,
 ) -> JsonResult<UsersListResponse> {
     let name_filter = name.into_inner().or(user_id.into_inner());
-    // Convert not_deactivated to deactivated:
-    // not_deactivated=true  -> deactivated=false (exclude deactivated)
-    // not_deactivated=false -> deactivated=true  (show only deactivated)
-    // not_deactivated=None  -> deactivated=None  (show all)
-    let deactivated = not_deactivated.into_inner().map(|val| !val);
+    // Preserve the old Palpo alias; the documented parameter wins if both occur.
+    let deactivated = deactivated
+        .into_inner()
+        .or_else(|| not_deactivated.into_inner().map(|val| !val));
     let filter = data::user::ListUsersFilter {
         server_name: Some(config::get().server_name.to_string()),
         from: from.into_inner(),

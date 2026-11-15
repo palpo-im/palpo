@@ -158,15 +158,14 @@ pub async fn provision_user(
         data::user::set_guest(&user_id, false).await?;
     }
     if let Some(displayname) = &body.set_displayname {
-        data::user::set_display_name(&user_id, displayname).await?;
+        user::profile::set_display_name(&user_id, Some(displayname)).await?;
     } else if body.unset_displayname {
-        data::user::remove_display_name(&user_id).await?;
+        user::profile::set_display_name(&user_id, None).await?;
     }
     if let Some(avatar_url) = &body.set_avatar_url {
-        let mxc_uri: &MxcUri = avatar_url.as_str().into();
-        data::user::set_avatar_url(&user_id, mxc_uri).await?;
+        user::profile::set_admin_avatar(&user_id, avatar_url).await?;
     } else if body.unset_avatar_url {
-        data::user::remove_avatar_url(&user_id).await?;
+        user::profile::set_avatar(&user_id, None, None).await?;
     }
     if let Some(emails) = body.set_emails {
         let entries: Vec<(String, String, Option<i64>, Option<i64>)> = emails
@@ -315,7 +314,7 @@ pub async fn reactivate_user(body: JsonBody<LocalpartReqBody>) -> EmptyResult {
 pub async fn set_displayname(body: JsonBody<SetDisplaynameReqBody>) -> EmptyResult {
     let body = body.into_inner();
     let user_id = localpart_to_user_id(&body.localpart)?;
-    data::user::set_display_name(&user_id, &body.displayname).await?;
+    user::profile::set_display_name(&user_id, Some(&body.displayname)).await?;
     empty_ok()
 }
 
@@ -323,7 +322,7 @@ pub async fn set_displayname(body: JsonBody<SetDisplaynameReqBody>) -> EmptyResu
 #[endpoint]
 pub async fn unset_displayname(body: JsonBody<LocalpartReqBody>) -> EmptyResult {
     let user_id = localpart_to_user_id(&body.into_inner().localpart)?;
-    data::user::remove_display_name(&user_id).await?;
+    user::profile::set_display_name(&user_id, None).await?;
     empty_ok()
 }
 

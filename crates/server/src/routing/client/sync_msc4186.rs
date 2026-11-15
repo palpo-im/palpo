@@ -72,8 +72,8 @@ pub(super) async fn sync_events_v5(
     }
 
     // Get sticky parameters from cache
-    let (known_rooms, previous_list_counts, previous_list_windows) =
-        crate::sync_v5::update_sync_request_with_cache(
+    let (known_rooms, previous_list_counts, previous_list_windows, generation) =
+        crate::sync_v5::update_sync_request_with_cache_and_generation(
             sender_id.to_owned(),
             device_id.to_owned(),
             &mut req_body,
@@ -90,9 +90,15 @@ pub(super) async fn sync_events_v5(
         Some(crate::watcher::load_watch_snapshot(sender_id, device_id, profile_updates).await?)
     };
 
-    let mut res_body =
-        crate::sync_v5::sync_events(sender_id, device_id, since.clone(), &req_body, &known_rooms)
-            .await?;
+    let mut res_body = crate::sync_v5::sync_events_for_request(
+        sender_id,
+        device_id,
+        since.clone(),
+        &req_body,
+        &known_rooms,
+        generation,
+    )
+    .await?;
 
     let since_is_ahead = since_sn > data::curr_sn().await?;
     if should_long_poll(
@@ -124,9 +130,15 @@ pub(super) async fn sync_events_v5(
                 result?;
             }
         }
-        res_body =
-            crate::sync_v5::sync_events(sender_id, device_id, since, &req_body, &known_rooms)
-                .await?;
+        res_body = crate::sync_v5::sync_events_for_request(
+            sender_id,
+            device_id,
+            since,
+            &req_body,
+            &known_rooms,
+            generation,
+        )
+        .await?;
     }
 
     crate::sync_v5::update_sync_list_counts(

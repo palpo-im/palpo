@@ -1,9 +1,12 @@
+use diesel::prelude::*;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use palpo_core::push::PusherIds;
 use url::Url;
 
 use crate::core::UnixMillis;
 use crate::core::client::push::{PusherAction, PusherPostData};
 use crate::core::events::TimelineEventType;
+use crate::core::events::room::member::{MembershipState, RoomMemberEventContent};
 use crate::core::identifiers::*;
 use crate::core::push::push_gateway::{
     Device, Notification, NotificationCounts, NotificationPriority, SendEventNotificationReqBody,
@@ -12,10 +15,55 @@ use crate::core::push::push_gateway::{
 use crate::core::push::{
     Action, HighlightTweakValue, PushFormat, Pusher, PusherKind, Ruleset, Tweak,
 };
+use crate::data::schema::{room_users, users};
 use crate::data::user::pusher::{DbPusher, NewDbPusher};
 use crate::event::PduEvent;
 use crate::utils::url_guard;
 use crate::{AppError, AppResult, AuthedInfo, data, room, sending};
+
+pub(crate) fn local_invite_target(event: &PduEvent) -> Option<OwnedUserId> {
+    if event.event_ty != TimelineEventType::RoomMember
+        || event
+            .get_content::<RoomMemberEventContent>()
+            .ok()?
+            .membership
+            != MembershipState::Invite
+    {
+        return None;
+    }
+    let target = UserId::parse(event.state_key.as_deref()?).ok()?;
+    (target.server_name() == crate::config::server_name()).then_some(target)
+}
+
+/// Push is live delivery, even when the event is still readable as history.
+/// Only active local joined users may receive it. The sole invitation exception
+/// is the target of the exact invitation which is still current in this room.
+pub(crate) async fn may_receive_push(user: &UserId, event: &PduEvent) -> AppResult<bool> {
+    if user.server_name() != crate::config::server_name() || user == event.sender {
+        return Ok(false);
+    }
+    let membership = room_users::table
+        .inner_join(users::table.on(users::id.eq(room_users::user_id)))
+        .filter(room_users::user_id.eq(user))
+        .filter(room_users::room_id.eq(&event.room_id))
+        .filter(users::is_local.eq(true))
+        .filter(users::deactivated_at.is_null())
+        .filter(users::locked_at.is_null())
+        .filter(users::suspended_at.is_null())
+        .select((room_users::membership, room_users::event_id))
+        .first::<(String, OwnedEventId)>(&mut data::db())
+        .await
+        .optional()?;
+    let Some((membership, membership_event)) = membership else {
+        return Ok(false);
+    };
+    if membership == "join" {
+        return room::state::user_can_see_event(user, &event.event_id).await;
+    }
+    Ok(membership == "invite"
+        && membership_event == event.event_id
+        && local_invite_target(event).as_deref() == Some(user))
+}
 
 pub async fn set_pusher(authed: &AuthedInfo, pusher: PusherAction) -> AppResult<()> {
     match pusher {
@@ -128,6 +176,9 @@ pub async fn send_push_notice(
     ruleset: Ruleset,
     pdu: &PduEvent,
 ) -> AppResult<()> {
+    if !may_receive_push(user, pdu).await? {
+        return Ok(());
+    }
     let mut notify = None;
     let mut tweaks = Vec::new();
     let power_levels = room::get_power_levels(&pdu.room_id).await?;
@@ -226,13 +277,19 @@ async fn send_notice(
                 notification.content = serde_json::value::to_raw_value(&event.content).ok();
                 if event.event_ty == TimelineEventType::RoomMember {
                     notification.user_is_target =
-                        event.state_key.as_deref() == Some(event.sender.as_str());
+                        event.state_key.as_deref() == Some(registration.user_id.as_str());
                 }
                 notification.sender_display_name =
                     data::user::display_name(&event.sender).await.ok().flatten();
                 notification.room_name = room::get_name(&event.room_id).await.ok();
             }
 
+            // Recheck after rule/profile lookups and after the sending worker
+            // waited for outbound capacity. A queued notification is not a
+            // continuing grant to deliver after a leave, kick or ban.
+            if !may_receive_push(&registration.user_id, event).await? {
+                return Ok(());
+            }
             let response = send_gateway_notification(push_client, url, notification).await?;
             remove_rejected_pusher(registration, &response).await?;
 
@@ -278,7 +335,6 @@ async fn remove_rejected_pusher(
 
 #[cfg(test)]
 mod tests {
-    use diesel::prelude::*;
     use horme::RunQueryDsl;
 
     use super::*;

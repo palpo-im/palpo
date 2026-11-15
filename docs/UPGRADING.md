@@ -1,5 +1,43 @@
 # Upgrading Palpo
 
+## Audit fixes for push delivery and sync state
+
+Local OIDC login now requires an explicitly trusted Matrix client callback in
+`oidc.sso_allowed_redirect_origins`. Configure the Web origins or exact native
+callback URLs before enabling local OIDC SSO traffic; an empty list refuses
+client redirects. Both login initiation and the callback validate the target.
+See [SSO client redirects](development/sso-client-redirects.md) for examples and
+the distinction from delegated SSO configuration.
+
+Native callback matching is now exact for both local OIDC and delegated SSO.
+For example, replace a broad `element://vector/` entry with the actual callback
+`element://vector/webapp` when that is the client endpoint in use. Web entries
+remain origins; custom schemes require the full callback host and path.
+
+Upgrade all notification writers together: action insertion, receipt cleanup
+and notification summaries now use a shared database transaction lock. Old
+processes do not participate in that lock. The change adds no migration and
+does not restore notifications previously removed by an incorrect fully-read
+marker. Lost private receipt thread scopes and read positions already broadcast
+by an older process are not reconstructed or undone. Current push recipients
+and event visibility are checked again before
+delivery; leaving a room also suppresses its previously queued push work.
+
+Sliding sync accepts connection identifiers of at most 16 characters. Room
+subscriptions and lists are bounded to 100 timeline events; negative
+subscription limits are rejected. Older cached required-state delivery records
+are refreshed once, and clients must return the opaque response position intact
+to acknowledge state delivery. In-memory connection eviction is independent of
+database expiry; persisted connection rows retain their existing expiry policy.
+Upgrade sliding-sync nodes together: older processes do not preserve the new
+required-state delivery and configuration-generation fields in shared caches.
+
+Client, administrator and MAS profile writes now publish membership changes
+and refresh presence through one service. A partial room failure returns an
+error after the global profile may already have committed. Retrying the same
+value reconciles remaining rooms without duplicating matching member events.
+See [profile propagation](development/profile-propagation.md).
+
 ## Salvo routing compatibility
 
 Salvo and its routing core remain pinned to 1.0.1. Salvo 1.1.2 rejects encoded

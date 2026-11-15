@@ -1,3 +1,5 @@
+use std::collections::{HashSet, VecDeque};
+
 use salvo::oapi::extract::*;
 use salvo::prelude::*;
 
@@ -138,26 +140,29 @@ async fn missing_events(
     let room_id = room_id.into_inner();
     crate::federation::access_check(origin, &room_id, None).await?;
 
-    let mut queued_events = body.latest_events.clone();
+    let latest: HashSet<_> = body.latest_events.iter().cloned().collect();
+    let earliest: HashSet<_> = body.earliest_events.iter().cloned().collect();
+    let mut seen = HashSet::new();
+    let mut queued_events = VecDeque::new();
+    for event_id in &body.latest_events {
+        if seen.insert(event_id.clone()) {
+            queued_events.push_back(event_id.clone());
+        }
+    }
     let mut events = Vec::new();
 
-    let mut i = 0;
-    while i < queued_events.len() && events.len() < body.limit {
-        let event_id = queued_events[i].clone();
+    while events.len() < body.limit {
+        let Some(event_id) = queued_events.pop_front() else {
+            break;
+        };
+        if earliest.contains(&event_id) {
+            continue;
+        }
         if let Some(pdu) = timeline::get_pdu_json(&event_id).await? {
-            // For v12 rooms, the event JSON does not contain `room_id` (it is
-            // derived from the create event id). Look it up from the events
-            // table instead and only use the JSON room_id if present.
-            let event_room_id_owned: OwnedRoomId =
-                match pdu.get("room_id").and_then(|val| val.as_str()) {
-                    Some(s) => s.try_into().map_err(|_| {
-                        AppError::internal("invalid room id field in event in database")
-                    })?,
-                    None => {
-                        let db_event = DbEvent::get_by_id(&event_id).await?;
-                        db_event.room_id
-                    }
-                };
+            // Bind identity and depth to trusted storage, including v12 events
+            // whose federation JSON omits room_id.
+            let db_event = DbEvent::get_by_id(&event_id).await?;
+            let event_room_id_owned = db_event.room_id;
 
             if *event_room_id_owned != *room_id {
                 warn!(
@@ -167,21 +172,26 @@ async fn missing_events(
                 return Err(MatrixError::invalid_param("evil event detected").into());
             }
 
-            if body.earliest_events.contains(&event_id) {
-                i += 1;
+            if u64::try_from(db_event.depth).unwrap_or_default() < body.min_depth {
                 continue;
             }
 
-            queued_events.extend_from_slice(
-                &serde_json::from_value::<Vec<OwnedEventId>>(
+            let parents =
+                serde_json::from_value::<Vec<OwnedEventId>>(
                     serde_json::to_value(pdu.get("prev_events").cloned().ok_or_else(|| {
                         AppError::internal("Event in db has no prev_events field.")
                     })?)
                     .expect("canonical json is valid json value"),
                 )
-                .map_err(|_| AppError::internal("invalid prev_events content in pdu in db::"))?,
-            );
-            if i >= body.latest_events.len() {
+                .map_err(|_| AppError::internal("invalid prev_events content in pdu in db::"))?;
+            for parent in parents {
+                if seen.insert(parent.clone()) {
+                    queued_events.push_back(parent);
+                }
+            }
+            if !latest.contains(&event_id)
+                && state::server_can_see_event(origin, &room_id, &event_id).await?
+            {
                 events.push((
                     event_id,
                     crate::sending::convert_to_outgoing_federation_event(pdu).await,
@@ -190,18 +200,8 @@ async fn missing_events(
         } else {
             warn!("event not found, event id: {:?}", event_id);
         }
-        i += 1;
     }
-    let mut filtered_events = Vec::new();
-    for (event_id, event) in events.into_iter().rev() {
-        if state::server_can_see_event(origin, &room_id, &event_id)
-            .await
-            .unwrap_or(false)
-        {
-            filtered_events.push(event);
-        }
-    }
-    let events = filtered_events;
+    let events = events.into_iter().rev().map(|(_, event)| event).collect();
     json_ok(MissingEventsResBody { events })
 }
 
@@ -209,3 +209,7 @@ async fn missing_events(
 async fn exchange_third_party_invite(_aa: AuthArgs) -> EmptyResult {
     Err(MatrixError::unrecognized("Third-party invite exchange is not implemented.").into())
 }
+
+#[cfg(test)]
+#[path = "event_review_tests.rs"]
+mod review_tests;
