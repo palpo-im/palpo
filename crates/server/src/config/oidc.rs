@@ -164,7 +164,7 @@ pub(crate) fn sso_redirect_allowed(client: &url::Url, allowed: &[String]) -> boo
             // configured authority before granting the ephemeral-port exception.
             // Non-origin spellings that Uri cannot parse do not get a wildcard.
             let portless_loopback = loopback
-                && entry.parse::<http::Uri>().ok().is_some_and(|uri| {
+                && entry.parse::<salvo::http::Uri>().ok().is_some_and(|uri| {
                     uri.authority()
                         .is_some_and(|authority| authority.port().is_none())
                 });
