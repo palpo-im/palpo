@@ -1,5 +1,17 @@
 # Upgrading Palpo
 
+## Salvo routing compatibility
+
+Salvo and its routing core remain pinned to 1.0.1. Salvo 1.1.2 rejects encoded
+slashes before matching routes, but Matrix permits `/` in user ID localparts
+and requires those characters to be encoded inside URL parameters. For example,
+`@a/b:example.org` must remain one parameter when sent as `@a%2Fb:example.org`.
+The explicit core constraint prevents a facade-only pin from silently resolving
+a newer incompatible router. Run `cargo test -p palpo --test path_encoding_contract`
+before changing either constraint. An upgrade must preserve segment boundaries,
+decode parameters once, and leave the original request URI intact for federation
+signature verification. No URI rewriting workaround is installed.
+
 ## Commit safe account data and key backups
 
 Stop old writers before deploying this version, then upgrade all nodes that issue
