@@ -49,3 +49,7 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# Reviewed, API-compatible 0.8.1 maintenance backport; upstream xiph/rav1e#3481.
+# Cargo.toml pins b1af6dfed0c7d413700cc81eb7d194b764295451.
+allow-git = ["https://github.com/chrislearn/rav1e"]
+required-git-spec = "rev"
