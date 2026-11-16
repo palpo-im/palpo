@@ -17,6 +17,7 @@ on:
       - 'tests/dependency_policy*.py'
       - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
+      - '.github/scripts/**'    # or publication guard changes
   push:
     branches:
       - main
@@ -30,6 +31,7 @@ on:
       - 'tests/dependency_policy*.py'
       - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
+      - '.github/scripts/**'    # or publication guard changes
 
 jobs:
   typos:
@@ -37,6 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Publication ref guard regressions
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/scripts -p 'test_check_publish_ref.py'
       - name: Typos check with custom config file
         uses: crate-ci/typos@v1.52.2
 
