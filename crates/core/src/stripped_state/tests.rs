@@ -79,10 +79,12 @@ fn via_limit_counts_duplicates_before_deduplication() {
         .unwrap();
         args.validate().unwrap();
         args.via.push("example.org".try_into().unwrap());
-        assert!(matches!(
-            args.validate().unwrap_err().kind,
-            ErrorKind::TooLarge
-        ));
+        let error = args.validate().unwrap_err();
+        assert!(matches!(error.kind, ErrorKind::TooLarge));
+        assert_eq!(
+            error.status_code,
+            Some(salvo::http::StatusCode::BAD_REQUEST)
+        );
     }
     let empty: ClientArgs = from_value(json!({"room_id_or_alias": "!room:example.org"})).unwrap();
     assert!(empty.via.is_empty());

@@ -25,6 +25,7 @@ unstable-msc4480 = ["palpo-core/unstable-msc4480"]
 unstable-msc4495 = ["palpo-core/unstable-msc4495"]
 unstable-msc4532 = ["palpo-core/unstable-msc4532", "palpo-data/unstable-msc4532", "unstable-msc4495"]
 unstable-msc4559 = ["palpo-core/unstable-msc4559", "unstable-msc4532"]
+unstable-msc4560 = ["palpo-core/unstable-msc4560"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]

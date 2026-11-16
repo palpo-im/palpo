@@ -240,6 +240,11 @@ fn get_capabilities(_aa: AuthArgs, depot: &mut Depot) -> JsonResult<Capabilities
 #[endpoint]
 fn supported_versions() -> JsonResult<VersionsResBody> {
     let mut body = supported_versions_body(config::get().delayed_events.enable);
+    #[cfg(feature = "unstable-msc4560")]
+    if config::get().enable_stripped_state {
+        body.unstable_features
+            .insert("org.continuwuity.msc4560".to_owned(), true);
+    }
     if config::get().rtc.enabled {
         for flag in ["org.matrix.msc4143", "org.matrix.msc4143.stable"] {
             body.unstable_features.insert(flag.to_owned(), true);

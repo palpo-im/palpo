@@ -53,6 +53,58 @@ defaults:
     shell: bash
 
 jobs:
+  stripped-state:
+    name: MSC4560 stripped-state federation
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - name: Prepare pinned Complement and stripped-state tests
+        run: |
+          git init /tmp/complement
+          git -C /tmp/complement remote add origin https://github.com/matrix-org/complement.git
+          git -C /tmp/complement fetch --depth 1 origin "$COMPLEMENT_REVISION"
+          git -C /tmp/complement checkout --detach FETCH_HEAD
+          mkdir -p /tmp/complement/tests/palpo_stripped_state
+          cp tests/complement/stripped_state/*_test.go /tmp/complement/tests/palpo_stripped_state/
+          cd /tmp/complement
+          go test -c -o /tmp/stripped-state.test ./tests/palpo_stripped_state
+      - uses: docker/setup-buildx-action@v4
+      - name: Build MSC4560-enabled Palpo
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: tests/complement/Dockerfile.github
+          build-args: PALPO_FEATURES=unstable-msc4560
+          tags: complement-palpo-stripped-state
+          load: true
+          cache-from: type=gha,scope=stripped-state
+          cache-to: type=gha,mode=max,scope=stripped-state
+      - name: Record stripped-state provenance
+        run: bash tests/complement-provenance.sh /tmp/complement complement-palpo-stripped-state /tmp/stripped-state-provenance.txt unstable-msc4560
+      - name: Require two-homeserver stripped-state queries to pass
+        run: |
+          cd /tmp/complement
+          COMPLEMENT_BASE_IMAGE=complement-palpo-stripped-state \
+            COMPLEMENT_SHARE_ENV_PREFIX=PALPO_STRIPPED_ \
+            PALPO_STRIPPED_PALPO_ENABLE_STRIPPED_STATE=true \
+            go test -p=1 -parallel=1 -count=1 -timeout 10m -json ./tests/palpo_stripped_state \
+            | tee /tmp/stripped-state-results.jsonl
+      - name: Upload stripped-state results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stripped-state-results
+          path: |
+            /tmp/stripped-state-results.jsonl
+            /tmp/stripped-state-provenance.txt
+          if-no-files-found: warn
+          retention-days: 14
+
   revised-presence:
     name: Revised presence federation
     runs-on: ubuntu-latest

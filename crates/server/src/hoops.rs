@@ -323,6 +323,15 @@ pub fn record_password_failure(user_id: &str) -> AppResult<()> {
     PASSWORD_LIMITER.check(user_id, &crate::config::get().rc_password)
 }
 
+/// Per-IP preview budget, including requests without authentication.
+#[cfg(feature = "unstable-msc4560")]
+#[handler]
+pub async fn limit_stripped_state(req: &mut Request) -> AppResult<()> {
+    static LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
+    let ip = extract_ip(req).unwrap_or_else(|| "unknown".to_owned());
+    LIMITER.check(&ip, &crate::config::get().rc_message)
+}
+
 /// General rate limiter for authenticated API endpoints.
 #[handler]
 pub async fn limit_rate(req: &mut Request, depot: &mut Depot) -> AppResult<()> {

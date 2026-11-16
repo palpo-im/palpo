@@ -300,6 +300,20 @@ jobs:
             done
           done
 
+      - name: MSC4560 stripped-state authorization regressions
+        timeout-minutes: 10
+        run: |
+          index=0
+          for case in review_stripped_state_visibility_validation_and_signed_federation review_stripped_state_disabled; do
+            test="stripped_state::tests::$case"
+            cargo test --locked -p palpo --lib --all-features "$test" -- --list --ignored --exact | grep -F "$test: test"
+            database="palpo_stripped_${index}"
+            sudo -u postgres createdb -O palpo_test "$database"
+            PALPO_TEST_DATABASE_URL="postgres://palpo_test:palpo_test@localhost/$database" \
+              cargo test --locked -p palpo --lib --all-features "$test" -- --ignored --exact --test-threads=1
+            index=$((index + 1))
+          done
+
       - name: Alias mutation and generation upgrade regressions
         timeout-minutes: 15
         run: |

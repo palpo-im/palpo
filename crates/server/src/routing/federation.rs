@@ -23,7 +23,7 @@ use crate::core::federation::directory::ServerVersionResBody;
 use crate::{AppError, AppResult, AuthArgs, JsonResult, config, hoops, json_ok};
 
 pub fn router() -> Router {
-    Router::with_path("federation")
+    let router = Router::with_path("federation")
         .hoop(check_federation_enabled)
         .oapi_tag("federation")
         // Discovery, OpenID tokens and identity-server bind callbacks do not use server
@@ -40,7 +40,10 @@ pub fn router() -> Router {
                 .push(threepid::router())
                 .push(openid::router()),
         )
-        .push(authenticated_router())
+        .push(authenticated_router());
+    #[cfg(feature = "unstable-msc4560")]
+    let router = router.push(crate::stripped_state::federation_router());
+    router
 }
 
 fn authenticated_router() -> Router {

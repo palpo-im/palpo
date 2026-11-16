@@ -30,9 +30,11 @@ impl StrippedStateMsc4560ReqArgs {
     /// Reject more than 32 entries with the proposal's `M_TOO_LARGE` error.
     pub fn validate(&self) -> MatrixResult<()> {
         if self.via.len() > MAX_VIAS {
-            return Err(MatrixError::too_large(
-                "MSC4560 permits at most 32 via entries",
-            ));
+            let mut error = MatrixError::too_large("MSC4560 permits at most 32 via entries");
+            // MSC4560 specifies HTTP 400 for this query limit, whereas the
+            // general M_TOO_LARGE helper defaults to HTTP 413 for bodies.
+            error.status_code = Some(StatusCode::BAD_REQUEST);
+            return Err(error);
         }
         Ok(())
     }
