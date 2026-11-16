@@ -561,4 +561,85 @@ async fn audit_contract_extensions(service: &Service, owner: &crate::core::UserI
     );
     let deletion=ok(admin(TestClient::post("http://localhost/_palpo/admin/v1/media/delete?before_ts=1800000000000&size_gt=0&keep_profiles=false")),service).await;
     assert_eq!(deletion["total"], 2);
+
+    // Alias ownership survives leaving a room, even if the creator retains a
+    // power-level entry that would otherwise permit updating canonical aliases.
+    let departed_aliases = [
+        "#departed-main:admin-contract.example",
+        "#departed-alt:admin-contract.example",
+    ];
+    for alias in departed_aliases {
+        ok(
+            TestClient::put(format!(
+                "http://localhost/_matrix/client/v3/directory/room/{}",
+                segment(alias)
+            ))
+            .add_header("Authorization", "Bearer member-token", true)
+            .json(&json!({"room_id":room})),
+            service,
+        )
+        .await;
+    }
+    let canonical_before = json!({
+        "alias":departed_aliases[0],
+        "alt_aliases":["#b:admin-contract.example",departed_aliases[1]],
+        "org.example.custom":true
+    });
+    let canonical_event = ok(
+        admin(TestClient::put(&canonical_url)).json(&canonical_before),
+        service,
+    )
+    .await;
+    ok(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{rid}/leave"
+        ))
+        .add_header("Authorization", "Bearer member-token", true)
+        .json(&json!({})),
+        service,
+    )
+    .await;
+    assert!(!crate::room::user::is_joined(&member, &room).await.unwrap());
+    assert!(
+        crate::room::get_power_levels(&room)
+            .await
+            .unwrap()
+            .user_can_send_state(
+                &member,
+                crate::core::events::StateEventType::RoomCanonicalAlias
+            )
+    );
+    for alias in departed_aliases {
+        ok(
+            TestClient::delete(format!(
+                "http://localhost/_matrix/client/v3/directory/room/{}",
+                segment(alias)
+            ))
+            .add_header("Authorization", "Bearer member-token", true),
+            service,
+        )
+        .await;
+        assert!(
+            data::room::get_alias_room_id(&RoomAliasId::parse(alias).unwrap())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            ok(admin(TestClient::get(&canonical_url)), service).await,
+            canonical_before
+        );
+        let state = crate::room::get_state(
+            &room,
+            &crate::core::events::StateEventType::RoomCanonicalAlias,
+            "",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.event_id.as_str(),
+            canonical_event["event_id"].as_str().unwrap()
+        );
+    }
 }
