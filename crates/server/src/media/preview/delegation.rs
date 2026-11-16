@@ -173,9 +173,9 @@ pub(super) async fn preview(url: &Url, user: &UserId) -> AppResult<Option<Value>
             Ok(Ok(None)) if exclusive => return Ok(Some(json!({}))),
             Ok(Ok(None)) => {}
             _ if exclusive => {
-                return Err(crate::AppError::internal(
-                    "Exclusive preview provider failed",
-                ));
+                let mut error = MatrixError::unknown("Exclusive preview provider failed");
+                error.status_code = Some(salvo::http::StatusCode::INTERNAL_SERVER_ERROR);
+                return Err(error.into());
             }
             _ => {}
         }

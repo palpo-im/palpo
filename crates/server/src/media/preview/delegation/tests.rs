@@ -295,10 +295,8 @@ fn run(enabled: bool) {
                     // Exclusive failures and empty results never try another provider or local cache.
                     cached(EXCLUSIVE).await;
                     exclusive.set(Reply::Failure);
-                    assert_eq!(
-                        request(&service, EXCLUSIVE, "alice").await.0,
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    );
+                    let (status, body) = request(&service, EXCLUSIVE, "alice").await;
+                    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
                     exclusive.set(Reply::Json(Value::Null));
                     assert_eq!(
                         request(&service, EXCLUSIVE, "alice").await,
