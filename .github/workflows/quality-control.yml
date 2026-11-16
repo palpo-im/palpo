@@ -203,6 +203,7 @@ jobs:
             routing::client::oidc::tests::review_security_receipts_sessions_and_oidc_bindings
             sync_v3::resource_review_tests::review_live_promotion_and_purge_share_fence_and_atomic_tips
             sync_v3::resource_review_tests::review_filtered_room_skips_payloads_and_keeps_independent_membership
+            sync_v3::resource_review_tests::review_sync_notification_queries_follow_emitted_fields
             concurrency_review_tests::review_purge_preserves_tips_and_resumes_committed_batches
             concurrency_review_tests::review_receipt_latest_projection_retains_log_and_threads
             watcher::review_tests::review_watch_receipts_presence_and_pre_response_baseline

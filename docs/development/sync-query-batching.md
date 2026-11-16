@@ -13,6 +13,12 @@ event to preserve its truncation flag. Partial type filters run normally. Member
 one-time keys, sticky events, notification counts and independently enabled
 streams continue to be evaluated; a filtered room is not assumed to be inactive.
 
+Notification summary rows are loaded only when the existing response rules emit
+room counts or the request enables per-thread counts. Unchanged, event-filtered
+rooms still check read progress independently, but avoid reading every thread's
+unused summary. The SQL regression checks this across 12 rooms, and separately
+verifies thread-only delivery, aggregate counts and required-query failures.
+
 The isolated SQL regression compares scalar and batch frame results over 12 rooms,
 requires fewer queries for the batch, and checks one current/previous batch per
 sync instead of per-room frame reads. It also verifies independent typing,

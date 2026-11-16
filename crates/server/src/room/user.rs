@@ -27,7 +27,7 @@ use crate::{AppError, AppResult, MatrixError, utils};
 static JOIN_SN_CACHE: LazyLock<Mutex<LruCache<OwnedEventId, Seqnum>>> =
     LazyLock::new(|| Mutex::new(LruCache::new(10_000)));
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UserNotifySummary {
     pub notification_count: u64,
     pub unread_count: u64,

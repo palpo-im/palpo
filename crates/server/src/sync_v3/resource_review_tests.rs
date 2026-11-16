@@ -216,6 +216,10 @@ async fn filtered_batch() {
     assert!(response.rooms.join.is_empty());
     let queries = spy.snapshot();
     assert!(
+        !queries.iter().any(|q| q.contains("event_push_summaries")),
+        "filtered unchanged rooms loaded unused notification summaries"
+    );
+    assert!(
         !queries
             .iter()
             .any(|q| q.contains("event_receipts") && q.contains("json_data")),
@@ -453,4 +457,152 @@ async fn wait_advisory_waiters(expected: i64) {
             tokio::task::yield_now().await;
         }
     }).await.expect("expected publication/purge advisory waiters");
+}
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
+fn review_sync_notification_queries_follow_emitted_fields() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(notification_queries());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn notification_queries() {
+    use horme::RunQueryDsl;
+    let (service, room, sender, _) = setup().await;
+    let root = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/summary-root"
+        ))
+        .add_header("Authorization", "Bearer alice", true)
+        .json(&json!({"msgtype":"m.text","body":"root"})),
+        &service,
+    )
+    .await;
+    let root: OwnedEventId = root["event_id"].as_str().unwrap().try_into().unwrap();
+    let initial = sync_events(
+        &sender,
+        "D".into(),
+        &serde_json::from_value(json!({})).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        initial.rooms.join[&room]
+            .unread_notifications
+            .notification_count
+            .is_some()
+    );
+    let since = initial.next_batch;
+    seed_notification_summaries(&sender, &room, root.as_str()).await;
+    // Force a non-idle server window without activity in the joined room.
+    data::next_sn().await.unwrap();
+    let filter = json!({"room":{
+        "timeline":{"not_types":["*"]},"state":{"not_types":["*"]},
+        "ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]}
+    }});
+    let args: SyncEventsReqArgs =
+        serde_json::from_value(json!({"since":since,"filter":filter.to_string()})).unwrap();
+    let spy = crate::test_database::sql_spy::SqlSpy::install().await;
+    let omitted = sync_events(&sender, "D".into(), &args).await.unwrap();
+    assert!(omitted.rooms.join.is_empty());
+    let queries = spy.snapshot();
+    assert!(!queries.iter().any(|q| q.contains("event_push_summaries")));
+    assert!(
+        queries.iter().any(|q| q.contains("event_receipts")),
+        "read progress was not independently checked"
+    );
+    let mut thread_filter = filter.clone();
+    thread_filter["room"]["timeline"]["unread_thread_notifications"] = json!(true);
+    let thread_args: SyncEventsReqArgs =
+        serde_json::from_value(json!({"since":since,"filter":thread_filter.to_string()})).unwrap();
+    spy.reset();
+    let threads = sync_events(&sender, "D".into(), &thread_args)
+        .await
+        .unwrap();
+    let body = &threads.rooms.join[&room];
+    assert_eq!(
+        body.unread_thread_notifications[&root].notification_count,
+        Some(2)
+    );
+    assert_eq!(
+        body.unread_thread_notifications[&root].highlight_count,
+        Some(1)
+    );
+    assert!(body.unread_notifications.notification_count.is_none());
+    assert!(body.unread_count.is_none());
+    assert_eq!(
+        spy.snapshot()
+            .iter()
+            .filter(|q| q.contains("event_push_summaries"))
+            .count(),
+        1
+    );
+    spy.assert_coverage().await;
+    spy.uninstall().await;
+
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/summary-new"
+        ))
+        .add_header("Authorization", "Bearer bob", true)
+        .json(&json!({"msgtype":"m.text","body":"new"})),
+        &service,
+    )
+    .await;
+    seed_notification_summaries(&sender, &room, root.as_str()).await;
+    let visible_args: SyncEventsReqArgs = serde_json::from_value(json!({"since":since})).unwrap();
+    let visible = sync_events(&sender, "D".into(), &visible_args)
+        .await
+        .unwrap();
+    let body = &visible.rooms.join[&room];
+    assert!(!body.timeline.events.is_empty());
+    assert_eq!(body.unread_notifications.notification_count, Some(5));
+    assert_eq!(body.unread_notifications.highlight_count, Some(2));
+    assert_eq!(body.unread_count, Some(12));
+    assert!(body.unread_thread_notifications.is_empty());
+    // Required summary failures propagate; omitted summaries need no table access.
+    diesel::sql_query("ALTER TABLE event_push_summaries RENAME TO review_missing_push_summaries")
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    let failed = sync_events(&sender, "D".into(), &visible_args).await;
+    let still_omitted = sync_events(&sender, "D".into(), &args).await;
+    diesel::sql_query("ALTER TABLE review_missing_push_summaries RENAME TO event_push_summaries")
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    assert!(failed.is_err());
+    assert!(still_omitted.unwrap().rooms.join.is_empty());
+    let recovered = sync_events(&sender, "D".into(), &visible_args)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.rooms.join[&room]
+            .unread_notifications
+            .notification_count,
+        Some(5)
+    );
+}
+
+async fn seed_notification_summaries(user: &UserId, room: &RoomId, root: &str) {
+    use diesel::sql_types::Text;
+    use horme::RunQueryDsl;
+    diesel::sql_query("DELETE FROM event_push_summaries WHERE user_id=$1 AND room_id=$2")
+        .bind::<Text, _>(user.as_str())
+        .bind::<Text, _>(room.as_str())
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    diesel::sql_query("INSERT INTO event_push_summaries(user_id,room_id,notification_count,highlight_count,unread_count,stream_ordering,thread_id) VALUES($1,$2,3,1,5,0,NULL),($1,$2,2,1,7,0,$3)")
+        .bind::<Text,_>(user.as_str()).bind::<Text,_>(room.as_str()).bind::<Text,_>(root).execute(&mut data::db()).await.unwrap();
 }

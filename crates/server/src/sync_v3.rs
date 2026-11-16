@@ -1056,7 +1056,14 @@ async fn load_joined_room_with_frames(
             .take(filter.room.account_data.limit.unwrap_or(usize::MAX))
             .collect()
     };
-    let notify_summary = room::user::notify_summary(sender_id, room_id).await?;
+    let notify_summary =
+        if send_notification_counts || filter.room.timeline.unread_thread_notifications {
+            room::user::notify_summary(sender_id, room_id).await?
+        } else {
+            // These counters are omitted from this response. Keep the independent
+            // read-progress probe above, but do not load unused per-thread rows.
+            room::user::UserNotifySummary::default()
+        };
     let mut notification_count = None;
     let mut highlight_count = None;
     let mut unread_count = None;
