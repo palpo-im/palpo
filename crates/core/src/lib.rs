@@ -38,6 +38,8 @@ pub mod http_headers;
 pub mod media;
 // pub mod path_builder;
 pub mod state;
+#[cfg(feature = "unstable-msc4560")]
+pub mod stripped_state;
 pub mod user;
 pub mod utils;
 

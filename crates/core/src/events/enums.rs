@@ -21,6 +21,27 @@ pub const RECOMMENDED_STRIPPED_STATE_EVENT_TYPES: &[StateEventType] = &[
     StateEventType::RoomEncryption,
 ];
 
+/// Event types accepted by the standalone stripped-state queries in [MSC4560].
+///
+/// These are distinct from the recommended invite/knock stripped-state types.
+/// Every state key of a requested type is selected, including space relations.
+///
+/// [MSC4560]: https://github.com/matrix-org/matrix-spec-proposals/pull/4560
+#[cfg(feature = "unstable-msc4560")]
+pub const ALLOWED_STRIPPED_STATE_EVENTS: &[StateEventType] = &[
+    StateEventType::RoomCreate,
+    StateEventType::RoomName,
+    StateEventType::RoomAvatar,
+    StateEventType::RoomTopic,
+    StateEventType::RoomJoinRules,
+    StateEventType::RoomCanonicalAlias,
+    StateEventType::RoomGuestAccess,
+    StateEventType::RoomHistoryVisibility,
+    StateEventType::RoomEncryption,
+    StateEventType::SpaceChild,
+    StateEventType::SpaceParent,
+];
+
 /// Event types that servers should transfer upon [room upgrade]. The exact details for what is
 /// transferred is left as an implementation detail.
 ///

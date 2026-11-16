@@ -2,6 +2,9 @@ use reqwest::Url;
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "unstable-msc4560")]
+pub mod stripped_state;
+
 use crate::identifiers::*;
 use crate::room::TimestampToEventReqArgs;
 use crate::sending::{SendRequest, SendResult};

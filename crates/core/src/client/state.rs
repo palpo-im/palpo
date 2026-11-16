@@ -1,6 +1,9 @@
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "unstable-msc4560")]
+pub mod stripped_state;
+
 #[cfg(feature = "unstable-msc4354")]
 use crate::events::sticky::StickyDurationMs;
 use crate::events::{AnyStateEvent, AnyStateEventContent, StateEventType};
