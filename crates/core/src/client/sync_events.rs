@@ -7,6 +7,8 @@ use salvo::prelude::*;
 use serde::{self, Deserialize, Serialize};
 
 pub mod v3;
+#[cfg(feature = "unstable-msc4186")]
+pub mod v4;
 pub mod v5;
 
 /// Unread notifications count.

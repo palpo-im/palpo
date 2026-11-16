@@ -80,7 +80,7 @@ unstable-msc4143 = []
 unstable-msc4171 = []
 unstable-msc4191 = []
 unstable-msc4195 = ["unstable-msc4143"]
-unstable-msc4186 = []
+unstable-msc4186 = ["dep:js_int"]
 unstable-msc4203 = []
 unstable-msc4230 = []
 unstable-msc4262 = []
@@ -136,6 +136,7 @@ http-auth = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 js_option = { workspace = true }
+js_int = { version = "0.2.2", features = ["serde"], optional = true }
 jsonwebtoken = { workspace = true }
 konst = { workspace = true }
 language-tags = { workspace = true, optional = true }
