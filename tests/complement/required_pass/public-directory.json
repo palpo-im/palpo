@@ -1,0 +1,10 @@
+[
+  {
+    "package": "github.com/matrix-org/complement/tests/csapi",
+    "test": "TestRoomState/Parallel/GET_/publicRooms_lists_newly-created_room"
+  },
+  {
+    "package": "github.com/matrix-org/complement/tests/csapi",
+    "test": "TestPublicRoomsPagination"
+  }
+]
