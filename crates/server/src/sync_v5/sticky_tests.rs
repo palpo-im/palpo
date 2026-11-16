@@ -192,6 +192,27 @@ async fn run() {
     let drained = sync(&service, config(&room, "paging", 1), page3["pos"].as_str()).await;
     assert!(ids(&drained, &room).is_empty());
 
+    // A join-to-join profile update must not restart the delivery snapshot.
+    ok(
+        &service,
+        TestClient::put(
+            "http://localhost/_matrix/client/v3/profile/@alice:sticky.example/displayname",
+        )
+        .json(&json!({"displayname":"Alice updated"})),
+        "alice",
+    )
+    .await;
+    let drained = sync(
+        &service,
+        config(&room, "paging", 1),
+        drained["pos"].as_str(),
+    )
+    .await;
+    assert!(
+        ids(&drained, &room).is_empty(),
+        "profile update reset sticky progress"
+    );
+
     // Disabling (including omission) and re-enabling creates a new sticky snapshot.
     let disabled = sync(
         &service,
@@ -272,6 +293,32 @@ async fn run() {
         ids(&rejoined, &room),
         vec![first.clone()],
         "joined users must receive still-sticky pre-join history"
+    );
+
+    let retry_input = rejoined["pos"].as_str().unwrap();
+    let outstanding = sync(&service, config(&room, "paging", 1), Some(retry_input)).await;
+    assert_eq!(ids(&outstanding, &room), vec![fourth.clone()]);
+    ok(
+        &service,
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/leave"
+        ))
+        .json(&json!({})),
+        "alice",
+    )
+    .await;
+    ok(
+        &service,
+        TestClient::post(format!("http://localhost/_matrix/client/v3/join/{room}"))
+            .json(&json!({})),
+        "alice",
+    )
+    .await;
+    let replaced = sync(&service, config(&room, "paging", 1), Some(retry_input)).await;
+    assert_eq!(
+        ids(&replaced, &room),
+        vec![first.clone()],
+        "old unacknowledged page survived a new join period"
     );
 
     // Ignore rules apply independently of membership and sticky privileges.

@@ -186,7 +186,10 @@ pub(super) async fn collect(
         if room::user::is_joined(user, &room_id).await? {
             let member =
                 room::get_state(&room_id, &StateEventType::RoomMember, user.as_str(), None).await?;
-            joins.insert(room_id, member.event_sn);
+            let join =
+                room::user::join_sn_for_event(user, member.event_id.clone(), member.event_sn)
+                    .await?;
+            joins.insert(room_id, join);
         }
     }
     let state = update_required_state_cache(user, device, &request.conn_id, |cached| {
@@ -194,9 +197,12 @@ pub(super) async fn collect(
         state
             .rooms
             .retain(|id, progress| joins.get(id) == Some(&progress.join));
-        state
-            .offers
-            .retain(|_, offer| offer.progress.keys().all(|id| joins.contains_key(id)));
+        state.offers.retain(|_, offer| {
+            offer
+                .progress
+                .iter()
+                .all(|(id, p)| joins.get(id) == Some(&p.join))
+        });
         state.clone()
     })
     .await?;
