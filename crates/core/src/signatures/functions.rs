@@ -31,7 +31,7 @@ use crate::{
 /// The [maximum size allowed] for a PDU.
 ///
 /// [maximum size allowed]: https://spec.matrix.org/latest/client-server-api/#size-limits
-const MAX_PDU_BYTES: usize = 65_535;
+const MAX_PDU_BYTES: usize = 65_536;
 
 /// The fields to remove from a JSON object when converting JSON into the "canonical" form.
 static CANONICAL_JSON_FIELDS_TO_REMOVE: &[&str] = &["signatures", "unsigned"];
@@ -193,7 +193,7 @@ pub fn canonical_json(object: &CanonicalJsonObject) -> Result<String, Error> {
 /// signature from a supported algorithm.
 ///
 /// Unlike `content_hash` and `reference_hash`, this function does not report an error if the
-/// canonical JSON is larger than 65535 bytes; this function may be used for requests that are
+/// canonical JSON is larger than 65536 bytes; this function may be used for requests that are
 /// larger than just one PDU's maximum size.
 ///
 /// # Parameters
@@ -398,6 +398,18 @@ where
     V: Verifier,
 {
     verifier.verify_json(public_key, signature, canonical_json)
+}
+
+/// Validate the complete federation event, including hashes, signatures and unsigned data.
+///
+/// This is separate from signature-input serialization, which intentionally removes fields.
+/// Callers adding signatures after hashing must validate again before publishing the event.
+pub fn validate_pdu_size(object: &CanonicalJsonObject) -> Result<(), Error> {
+    let json = to_json_string(object).map_err(JsonError::Serde)?;
+    if json.len() > MAX_PDU_BYTES {
+        return Err(Error::PduSize);
+    }
+    Ok(())
 }
 
 /// Creates a *content hash* for an event.
@@ -608,7 +620,7 @@ where
         .ok_or_else(|| JsonError::not_of_type("signatures", JsonType::Object))?;
     object.insert("signatures".into(), mem::take(signatures));
 
-    Ok(())
+    validate_pdu_size(object)
 }
 
 /// Verifies that the signed event contains all the required valid signatures.
@@ -691,6 +703,7 @@ pub fn verify_event(
     object: &CanonicalJsonObject,
     rules: &RoomVersionRules,
 ) -> Result<Verified, Error> {
+    validate_pdu_size(object)?;
     let redacted = redact(object.clone(), &rules.redaction, None)?;
 
     let hash = match object.get("hashes") {

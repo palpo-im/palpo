@@ -1160,6 +1160,14 @@ impl PduBuilder {
         sender_id: &UserId,
     ) -> AppResult<(SnPduEvent, CanonicalJsonObject, Option<SeqnumQueueGuard>)> {
         let room_id = &pdu.room_id;
+        let room_version = crate::room::get_version(room_id).await?;
+        let mut wire = pdu_json.clone();
+        if !matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2) {
+            wire.remove("event_id");
+        }
+        sanitize_federation_unsigned(&mut wire);
+        crate::core::signatures::validate_pdu_size(&wire)
+            .map_err(|_| MatrixError::too_large("complete signed event is too large"))?;
         let (event_sn, event_guard) = crate::event::ensure_event_sn(room_id, &pdu.event_id).await?;
         let received_at = UnixMillis::now();
         let content_value: JsonValue = serde_json::from_str(pdu.content.get())?;

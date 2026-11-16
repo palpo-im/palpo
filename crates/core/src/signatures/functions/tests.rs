@@ -930,3 +930,35 @@ fn verify_policy_server_signature_covers_the_redacted_event() {
             verify_policy_server_signature(&room_policy, &signed_redacted, &RoomVersionRules::V6)
     );
 }
+
+#[test]
+fn complete_pdu_size_includes_signatures_unsigned_and_utf8_at_exact_boundary() {
+    let mut object: CanonicalJsonObject = serde_json::from_value(json!({
+        "content":{"body":""},"signatures":{"example.org":{"ed25519:1":"a".repeat(86)}},
+        "unsigned":{"age":1},"hashes":{"sha256":"h".repeat(43)}
+    }))
+    .unwrap();
+    let overhead = serde_json::to_vec(&object).unwrap().len();
+    for size in [65535usize, 65536, 65537] {
+        let padding = "a".repeat(size - overhead - 5);
+        object.insert(
+            "content".into(),
+            CanonicalJsonValue::try_from(json!({"body":format!("{padding}日\n")})).unwrap(),
+        );
+        assert_eq!(serde_json::to_vec(&object).unwrap().len(), size);
+        assert_eq!(super::validate_pdu_size(&object).is_ok(), size <= 65536);
+    }
+    // Hash inputs omit these fields, but complete-event validation must count them.
+    object.insert(
+        "content".into(),
+        CanonicalJsonValue::try_from(json!({"body":""})).unwrap(),
+    );
+    object.insert(
+        "unsigned".into(),
+        CanonicalJsonValue::try_from(json!({"large":"x".repeat(65536)})).unwrap(),
+    );
+    assert!(matches!(
+        super::validate_pdu_size(&object),
+        Err(Error::PduSize)
+    ));
+}
