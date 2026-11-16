@@ -195,6 +195,9 @@ pub(super) async fn collect(
     }
     let state = update_required_state_cache(user, device, &request.conn_id, |cached| {
         let state = &mut cached.sticky_delivery;
+        if state.config != config_key(request) {
+            return None;
+        }
         state
             .rooms
             .retain(|id, progress| joins.get(id) == Some(&progress.join));
@@ -205,9 +208,10 @@ pub(super) async fn collect(
                     .iter()
                     .all(|(id, p)| joins.get(id) == Some(&p.join))
         });
-        state.clone()
+        Some(state.clone())
     })
-    .await?;
+    .await?
+    .ok_or_else(|| crate::AppError::internal("sticky sync request configuration is stale"))?;
     let mut offer = if let Some(previous) = state.offers.values().find(|o| {
         o.input.as_deref() == input
             // An empty probe built before long polling has not been returned.

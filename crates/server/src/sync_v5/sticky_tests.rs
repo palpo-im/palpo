@@ -423,6 +423,41 @@ async fn run() {
     );
     assert!(ids(&woken, &room).contains(&wake));
 
+    // A replacement request can commit after acknowledgement but before collection.
+    // The old request must not adopt the replacement's generation and record a page.
+    let user = UserId::parse("@alice:sticky.example").unwrap();
+    let mut stale: SyncEventsReqBody =
+        serde_json::from_value(config(&room, "config-race", 1)).unwrap();
+    update_sync_request_with_cache_and_generation(user.clone(), "D".into(), &mut stale).await;
+    acknowledge(&user, "D".into(), &stale, None).await.unwrap();
+    let mut replacement = stale.clone();
+    replacement.extensions.sticky_events.limit = Some(2);
+    update_sync_request_with_cache_and_generation(user.clone(), "D".into(), &mut replacement).await;
+    let stale_page = collect(
+        SyncInfo {
+            sender_id: &user,
+            device_id: "D".into(),
+            since_sn: 0,
+            req_body: &stale,
+        },
+        None,
+        &BTreeMap::new(),
+        &mut TodoRooms::new(),
+        data::curr_sn().await.unwrap() + 1,
+    )
+    .await;
+    assert!(
+        stale_page.is_err(),
+        "stale request adopted a newer configuration"
+    );
+    assert!(
+        !ids(
+            &sync(&service, config(&room, "config-race", 2), None).await,
+            &room
+        )
+        .is_empty()
+    );
+
     // Delivery state is part of response correctness: no successful cursor on failure.
     diesel::sql_query(
         "ALTER TABLE sliding_sync_connections RENAME TO review_unavailable_sticky_connections",
