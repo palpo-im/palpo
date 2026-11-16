@@ -691,6 +691,56 @@ pub async fn get_full_state_ids(frame_id: i64) -> AppResult<IndexMap<i64, OwnedE
     Ok(map)
 }
 
+/// Select all keys of the requested types from one captured frame. Resolve
+/// event IDs/bodies only after filtering, avoiding one read per room member.
+#[cfg(feature = "unstable-msc4560")]
+pub(crate) async fn get_state_for_types(
+    frame_id: i64,
+    types: &std::collections::BTreeSet<StateEventType>,
+    max_events: usize,
+) -> AppResult<Vec<SnPduEvent>> {
+    if types.is_empty() {
+        return Ok(Vec::new());
+    }
+    let frame = load_frame_info(frame_id)
+        .await?
+        .pop()
+        .expect("one state layer");
+    let fields = room_state_fields::table
+        .filter(
+            room_state_fields::id.eq_any(
+                frame
+                    .full_state
+                    .iter()
+                    .map(|e| e.field_id())
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .filter(
+            room_state_fields::event_ty
+                .eq_any(types.iter().map(ToString::to_string).collect::<Vec<_>>()),
+        )
+        .select(room_state_fields::id)
+        .load::<i64>(&mut crate::data::db())
+        .await?
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let selected = frame
+        .full_state
+        .iter()
+        .filter(|e| fields.contains(&e.field_id()))
+        .collect::<Vec<_>>();
+    if selected.len() > max_events {
+        return Err(MatrixError::too_large("Stripped-state selection exceeds event limit").into());
+    }
+    let mut events = Vec::with_capacity(selected.len());
+    for event in selected {
+        let (_, id) = event.split().await?;
+        events.push(timeline::get_pdu(&id).await?);
+    }
+    Ok(events)
+}
+
 pub async fn get_full_state(
     frame_id: i64,
 ) -> AppResult<IndexMap<(StateEventType, String), SnPduEvent>> {

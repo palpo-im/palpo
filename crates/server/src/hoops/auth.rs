@@ -124,6 +124,47 @@ async fn auth_by_access_token_inner(aa: AuthArgs, depot: &mut Depot) -> AppResul
     auth_by_access_token_for(aa, depot, AccessTokenPolicy::MatrixApi).await
 }
 
+/// Optional authentication must still reject supplied invalid credentials.
+#[cfg(feature = "unstable-msc4560")]
+#[handler]
+pub async fn optional_access_token(aa: AuthArgs, depot: &mut Depot) -> AppResult<()> {
+    if aa.authorization.is_some() || aa.access_token.is_some() {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            auth_by_access_token_inner(aa, depot),
+        )
+        .await
+        .map_err(|_| optional_auth_deadline())??;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "unstable-msc4560")]
+#[handler]
+pub async fn optional_server_signatures(
+    aa: AuthArgs,
+    req: &mut Request,
+    depot: &mut Depot,
+) -> AppResult<()> {
+    if aa.authorization.is_some() {
+        tokio::time::timeout(Duration::from_secs(2), auth_by_signatures_inner(req, depot))
+            .await
+            .map_err(|_| optional_auth_deadline())??;
+    } else if aa.access_token.is_some() {
+        return Err(
+            MatrixError::forbidden("Federation requires X-Matrix credentials", None).into(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "unstable-msc4560")]
+fn optional_auth_deadline() -> MatrixError {
+    let mut error = MatrixError::unknown("Stripped-state authentication deadline exceeded");
+    error.status_code = Some(StatusCode::SERVICE_UNAVAILABLE);
+    error
+}
+
 async fn auth_by_access_token_for(
     aa: AuthArgs,
     depot: &mut Depot,

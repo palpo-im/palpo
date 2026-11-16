@@ -15,7 +15,7 @@ pub(super) fn router() -> Router {
     );
     #[cfg(feature = "unstable-msc1763")]
     let authed = authed.push(super::retention::router());
-    Router::with_path("unstable")
+    let router = Router::with_path("unstable")
         .push(Router::with_path("org.palpo.registration").get(crate::registration_email::discovery))
         // Public routes (no auth required) — MSC2965 OIDC discovery
         .push(
@@ -63,7 +63,10 @@ pub(super) fn router() -> Router {
                         .get(super::room::summary::get_summary_msc_3266),
                 )
                 .push(super::profile::msc4133_authed_router()),
-        )
+        );
+    #[cfg(feature = "unstable-msc4560")]
+    let router = router.push(crate::stripped_state::client_router());
+    router
 }
 
 /// `GET /_matrix/client/unstable/io.element.msc4388/rendezvous`

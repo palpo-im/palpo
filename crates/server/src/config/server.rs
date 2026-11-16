@@ -375,6 +375,12 @@ pub struct ServerConfig {
     #[serde(default)]
     pub enable_batch_profile_queries: bool,
 
+    /// Enable experimental MSC4560 stripped-state queries. Requires the
+    /// unstable-msc4560 Cargo feature. Requests accept only summary state types;
+    /// private rooms still require the proposal's visibility authorization.
+    #[serde(default)]
+    pub enable_stripped_state: bool,
+
     /// Enables registration. If set to false, no users can register on this
     /// server.
     ///
@@ -931,6 +937,12 @@ impl ServerConfig {
     }
 
     pub fn check(&self) -> AppResult<()> {
+        #[cfg(not(feature = "unstable-msc4560"))]
+        if self.enable_stripped_state {
+            return Err(AppError::internal(
+                "enable_stripped_state requires the unstable-msc4560 Cargo feature",
+            ));
+        }
         if self.access_token_ttl == 0 || self.refresh_token_ttl == 0 || self.session_ttl == 0 {
             return Err(AppError::internal(
                 "Session token lifetimes must be positive",

@@ -49,6 +49,8 @@ pub use exts::*;
 mod cjson;
 pub use cjson::Cjson;
 mod signing_keys;
+#[cfg(feature = "unstable-msc4560")]
+pub mod stripped_state;
 pub mod sync_v3;
 pub mod sync_v5;
 pub mod watcher;
