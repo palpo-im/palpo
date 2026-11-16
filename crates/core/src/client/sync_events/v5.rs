@@ -509,6 +509,14 @@ impl SyncRoomHero {
 /// Sliding-Sync extension configuration.
 #[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ExtensionsConfig {
+    /// Per-request sticky event delivery (MSC4480); no separate extension cursor.
+    #[cfg(feature = "unstable-msc4480")]
+    #[serde(
+        default,
+        rename = "org.matrix.msc4354.sticky_events",
+        skip_serializing_if = "StickyEventsConfig::is_disabled"
+    )]
+    pub sticky_events: StickyEventsConfig,
     /// Request to devices messages with the given config.
     #[serde(default, skip_serializing_if = "ToDeviceConfig::is_empty")]
     pub to_device: ToDeviceConfig,
@@ -558,6 +566,10 @@ pub struct ExtensionsConfig {
 impl ExtensionsConfig {
     /// Whether all fields are empty or `None`.
     pub fn is_empty(&self) -> bool {
+        #[cfg(feature = "unstable-msc4480")]
+        if self.sticky_events.enabled {
+            return false;
+        }
         let empty = self.to_device.is_empty()
             && self.e2ee.is_empty()
             && self.account_data.is_empty()
@@ -578,6 +590,14 @@ impl ExtensionsConfig {
 /// Extensions specific response data.
 #[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Extensions {
+    /// Sticky events not duplicated in the room timeline.
+    #[cfg(feature = "unstable-msc4480")]
+    #[serde(
+        default,
+        rename = "org.matrix.msc4354.sticky_events",
+        skip_serializing_if = "StickyEvents::is_empty"
+    )]
+    pub sticky_events: StickyEvents,
     /// To-device extension in response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_device: Option<ToDevice>,
@@ -624,6 +644,10 @@ impl Extensions {
     ///
     /// True if neither to-device, e2ee nor account data are to be found.
     pub fn is_empty(&self) -> bool {
+        #[cfg(feature = "unstable-msc4480")]
+        if !self.sticky_events.is_empty() {
+            return false;
+        }
         let empty = self
             .to_device
             .as_ref()
@@ -644,6 +668,10 @@ impl Extensions {
 
     /// Whether the extension carries meaningful incremental updates for long-polling.
     pub fn is_empty_for_long_poll(&self) -> bool {
+        #[cfg(feature = "unstable-msc4480")]
+        if !self.sticky_events.is_empty() {
+            return false;
+        }
         let empty = self
             .to_device
             .as_ref()
@@ -661,7 +689,50 @@ impl Extensions {
 }
 
 /// A room selector used by room-scoped extension configuration.
-#[cfg(any(feature = "unstable-msc4262", feature = "unstable-msc4559"))]
+#[cfg(feature = "unstable-msc4480")]
+#[derive(ToSchema, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StickyEventsConfig {
+    /// Must be enabled on each request; omission disables delivery.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-room limit, default 100. Servers may cap it at a lower value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    /// Omitted selects all lists; an empty list selects none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lists: Option<Vec<String>>,
+    /// Omitted selects all subscriptions; `*` selects all subscriptions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rooms: Option<Vec<ExtensionRoomConfig>>,
+}
+#[cfg(feature = "unstable-msc4480")]
+impl StickyEventsConfig {
+    /// Whether the extension is disabled.
+    pub fn is_disabled(&self) -> bool {
+        !self.enabled
+    }
+}
+/// Sticky event response, keyed by room.
+#[cfg(feature = "unstable-msc4480")]
+#[derive(ToSchema, Clone, Debug, Default, Serialize, Deserialize)]
+pub struct StickyEvents {
+    /// Events for selected joined rooms, in delivery order.
+    pub rooms: BTreeMap<OwnedRoomId, crate::client::sync_events::v3::Sticky>,
+}
+#[cfg(feature = "unstable-msc4480")]
+impl StickyEvents {
+    /// Whether this response contains no sticky events.
+    pub fn is_empty(&self) -> bool {
+        self.rooms.is_empty()
+    }
+}
+
+/// A room selector used by room-scoped extension configuration.
+#[cfg(any(
+    feature = "unstable-msc4262",
+    feature = "unstable-msc4559",
+    feature = "unstable-msc4480"
+))]
 #[derive(ToSchema, Clone, Debug, PartialEq)]
 pub enum ExtensionRoomConfig {
     /// Apply the extension to all global room subscriptions.
@@ -671,7 +742,11 @@ pub enum ExtensionRoomConfig {
     Room(OwnedRoomId),
 }
 
-#[cfg(any(feature = "unstable-msc4262", feature = "unstable-msc4559"))]
+#[cfg(any(
+    feature = "unstable-msc4262",
+    feature = "unstable-msc4559",
+    feature = "unstable-msc4480"
+))]
 impl Serialize for ExtensionRoomConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -684,7 +759,11 @@ impl Serialize for ExtensionRoomConfig {
     }
 }
 
-#[cfg(any(feature = "unstable-msc4262", feature = "unstable-msc4559"))]
+#[cfg(any(
+    feature = "unstable-msc4262",
+    feature = "unstable-msc4559",
+    feature = "unstable-msc4480"
+))]
 impl<'de> Deserialize<'de> for ExtensionRoomConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

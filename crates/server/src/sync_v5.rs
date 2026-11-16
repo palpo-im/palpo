@@ -29,6 +29,8 @@ mod presence;
 mod profiles;
 #[cfg(test)]
 mod resource_review_tests;
+#[cfg(feature = "unstable-msc4480")]
+mod sticky;
 
 /// Apply a sliding-sync list's filter pipeline to the candidate room sets.
 ///
@@ -122,6 +124,9 @@ type RequiredStateMap = BTreeMap<OwnedRoomId, BTreeMap<String, BTreeMap<String, 
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct SlidingSyncCache {
+    #[cfg(feature = "unstable-msc4480")]
+    #[serde(default)]
+    sticky_delivery: sticky::Delivery,
     lists: BTreeMap<String, sync_events::v5::ReqList>,
     #[serde(default)]
     list_counts: BTreeMap<String, usize>,
@@ -926,6 +931,8 @@ async fn sync_events_at_position(
     request_generation: Option<u64>,
 ) -> AppResult<SyncEventsResBody> {
     let since_sn = since.event_sn;
+    #[cfg(feature = "unstable-msc4480")]
+    sticky::acknowledge(sender_id, device_id, req_body, since.original.as_deref()).await?;
     // Periodically clean up expired connections
     maybe_cleanup_connections().await;
     // Another instance may have served this connection since this process last did --
@@ -975,6 +982,8 @@ async fn sync_events_at_position(
     #[cfg(not(feature = "unstable-msc4262"))]
     let curr_sn = data::user::curr_sn_after_presence_writes(Some((sender_id, device_id))).await?;
     crate::seqnum_reach(curr_sn).await;
+    #[cfg(feature = "unstable-msc4480")]
+    let curr_sn = crate::event::sticky::curr_sn_after_sync_writes(sender_id, device_id).await?;
 
     let invite_snapshot =
         crate::membership::invited_rooms_for_sync(sender_id, 0, device_id, curr_sn).await?;
@@ -996,6 +1005,10 @@ async fn sync_events_at_position(
         .collect();
 
     let all_joined_rooms: Vec<&RoomId> = all_joined_rooms.iter().map(AsRef::as_ref).collect();
+    #[cfg(feature = "unstable-msc4480")]
+    let sticky_enabled = req_body.extensions.sticky_events.enabled;
+    #[cfg(not(feature = "unstable-msc4480"))]
+    let sticky_enabled = false;
     let all_invited_rooms: Vec<&RoomId> = all_invited_rooms.iter().map(AsRef::as_ref).collect();
 
     // Load DM room set from m.direct account data
@@ -1156,6 +1169,7 @@ async fn sync_events_at_position(
             && !invites_owe_delivery
             && !lists_owe_update
             && !required_state_owed
+            && !sticky_enabled
         {
             return Ok(res);
         }
@@ -1175,6 +1189,8 @@ async fn sync_events_at_position(
         lists: BTreeMap::new(),
         rooms: BTreeMap::new(),
         extensions: Extensions {
+            #[cfg(feature = "unstable-msc4480")]
+            sticky_events: Default::default(),
             account_data: collect_account_data(sync_info).await?,
             e2ee: collect_e2ee(sync_info, &all_joined_rooms, curr_sn).await?,
             to_device: collect_to_device(sync_info, next_batch).await,
@@ -1204,6 +1220,15 @@ async fn sync_events_at_position(
     .await?;
 
     fetch_subscriptions(sync_info, &all_invited_rooms, &mut todo_rooms, known_rooms).await?;
+    #[cfg(feature = "unstable-msc4480")]
+    let sticky_offer = sticky::collect(
+        sync_info,
+        since.original.as_deref(),
+        &listed_rooms,
+        &mut todo_rooms,
+        next_batch,
+    )
+    .await?;
 
     // MSC4262 profile updates need the finished room subset, so they are collected after
     // the lists and subscriptions have been resolved rather than alongside the other
@@ -1238,9 +1263,13 @@ async fn sync_events_at_position(
         &todo_rooms,
         known_rooms,
         &mut res_body,
+        #[cfg(feature = "unstable-msc4480")]
+        &sticky_offer,
     )
     .await?;
     res_body.rooms = rooms;
+    #[cfg(feature = "unstable-msc4480")]
+    sticky::render(sync_info, &sticky_offer, &mut res_body).await?;
 
     // Profile delivery becomes durable only after the complete response was built and is
     // accepted only when the client returns with this response token.
@@ -1301,6 +1330,8 @@ async fn sync_events_at_position(
         request_generation,
     )
     .await?;
+    #[cfg(feature = "unstable-msc4480")]
+    sticky::record(sync_info, sticky_offer, &mut res_body).await?;
     Ok(res_body)
 }
 
@@ -1600,6 +1631,7 @@ async fn process_rooms(
     todo_rooms: &TodoRooms,
     known_rooms: &KnownRooms,
     response: &mut SyncEventsResBody,
+    #[cfg(feature = "unstable-msc4480")] sticky_offer: &sticky::Offer,
 ) -> AppResult<(
     BTreeMap<OwnedRoomId, sync_events::v5::SyncRoom>,
     RequiredStateMap,
@@ -1755,8 +1787,23 @@ async fn process_rooms(
                         .values()
                         .map(|pdu| pdu.sender.clone())
                         .collect();
+                    #[cfg(feature = "unstable-msc4480")]
+                    let senders = {
+                        let mut all = senders;
+                        if let Some(senders_in_sticky) = sticky_offer.senders.get(room_id) {
+                            all.extend(senders_in_sticky.iter().cloned());
+                        }
+                        all
+                    };
                     let mut members = Vec::new();
-                    for sender in senders.into_iter().take(100) {
+                    for sender in senders
+                        .into_iter()
+                        .take(if cfg!(feature = "unstable-msc4480") {
+                            200
+                        } else {
+                            100
+                        })
+                    {
                         if let Ok(pdu) =
                             room::get_state(room_id, event_type, sender.as_str(), None).await
                         {
@@ -2303,6 +2350,8 @@ pub async fn update_sync_request_with_cache_and_generation(
                 }
             }
 
+            #[cfg(feature = "unstable-msc4480")]
+            sticky::configure(&mut cached.sticky_delivery, &req_body);
             cached.extensions = req_body.extensions.clone();
             let known = cached.known_rooms.clone();
             let list_counts = cached.list_counts.clone();
@@ -2692,6 +2741,8 @@ mod tests {
             &[(room, TodoRoom::new(BTreeSet::new(), 10, 0))].into(),
             &KnownRooms::new(),
             &mut response,
+            #[cfg(feature = "unstable-msc4480")]
+            &sticky::Offer::default(),
         )
         .await
         .unwrap();
@@ -3509,6 +3560,8 @@ mod tests {
             &[(room.clone(), TodoRoom::new(BTreeSet::new(), 0, 0))].into(),
             &KnownRooms::new(),
             &mut response,
+            #[cfg(feature = "unstable-msc4480")]
+            &sticky::Offer::default(),
         )
         .await
         .unwrap()

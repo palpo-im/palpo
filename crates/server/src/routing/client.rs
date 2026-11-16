@@ -304,6 +304,8 @@ fn supported_versions_body(delayed_events: bool) -> VersionsResBody {
 
     #[cfg(feature = "unstable-msc4494")]
     unstable_features.insert("uk.timedout.msc4494".to_owned(), true);
+    #[cfg(feature = "unstable-msc4480")]
+    unstable_features.insert("org.matrix.msc4480".to_owned(), true);
 
     if delayed_events {
         // delayed events (https://github.com/matrix-org/matrix-spec-proposals/pull/4140)
