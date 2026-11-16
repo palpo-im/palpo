@@ -45,9 +45,11 @@ fn includes_room(filter: &RoomDataFilter, room_id: &RoomId) -> bool {
 
 /// Only skip work for filters that provably cannot return any event.
 fn room_section_is_empty(filter: &RoomEventFilter) -> bool {
-    filter.limit == Some(0)
-        || filter.not_types.iter().any(|ty| ty == "*")
-        || filter.types.as_ref().is_some_and(Vec::is_empty)
+    filter.limit == Some(0) || room_types_are_empty(filter)
+}
+
+fn room_types_are_empty(filter: &RoomEventFilter) -> bool {
+    filter.not_types.iter().any(|ty| ty == "*") || filter.types.as_ref().is_some_and(Vec::is_empty)
 }
 
 /// Capture per-room publication frames with bounded SQL batches. These bounds
@@ -1516,14 +1518,6 @@ pub(crate) async fn load_timeline(
     until_tk: Option<BatchToken>,
     filter: Option<&RoomEventFilter>,
 ) -> AppResult<TimelineData> {
-    if filter.is_some_and(room_section_is_empty) {
-        return Ok(TimelineData {
-            events: IndexMap::new(),
-            limited: false,
-            prev_batch: None,
-            next_batch: None,
-        });
-    }
     // Genuine backfill is ordered by topology, never by a negated receipt ID.
     // Keep historical sync prev_batch in the legacy t domain; q is messages-only.
     if since_tk.is_none() && timeline::publication::has_history(room_id).await? {
@@ -1537,7 +1531,11 @@ pub(crate) async fn load_timeline(
     }
     let limit = filter.and_then(|f| f.limit).unwrap_or(10).min(100);
     let mut is_backward = false;
-    let mut timeline_pdus = if let Some(since_tk) = since_tk {
+    let mut timeline_pdus = if filter.is_some_and(room_types_are_empty) {
+        // Empty types skip payload reads, but publication gaps below remain meaningful.
+        // A zero limit alone still probes one visible event to preserve truncation.
+        IndexMap::new()
+    } else if let Some(since_tk) = since_tk {
         if let Some(until_tk) = until_tk {
             let (min, max) = if until_tk.stream_ordering() > since_tk.stream_ordering() {
                 (since_tk, until_tk)

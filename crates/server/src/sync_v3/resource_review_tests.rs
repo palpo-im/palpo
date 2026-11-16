@@ -249,7 +249,7 @@ async fn filtered_batch() {
     spy.uninstall().await;
 
     // Equal captured bounds stay stable if later room events are published.
-    request(
+    let published = request(
         TestClient::put(format!(
             "http://localhost/_matrix/client/v3/rooms/{first_room}/state/m.room.topic"
         ))
@@ -282,8 +282,51 @@ async fn filtered_batch() {
             .iter()
             .any(|e| e["type"] == "m.typing")
     );
-    // Failed storage must not turn an incomplete frame set into a successful sync.
+    // Empty payloads must retain truncation and independent publication-gap metadata.
+    let bound = BatchToken::new_live(data::curr_sn().await.unwrap() + 1);
+    let zero: RoomEventFilter =
+        serde_json::from_value(json!({"limit":0,"types":["m.room.topic"]})).unwrap();
+    let truncated = load_timeline(&sender, &first_room, Some(since), Some(bound), Some(&zero))
+        .await
+        .unwrap();
+    assert!(truncated.events.is_empty() && truncated.limited);
+    let empty: RoomEventFilter = serde_json::from_value(json!({"types":[]})).unwrap();
+    assert!(
+        !load_timeline(&sender, &first_room, Some(since), Some(bound), Some(&empty))
+            .await
+            .unwrap()
+            .limited
+    );
     use horme::RunQueryDsl;
+    diesel::sql_query("INSERT INTO timeline_gaps(room_id,event_sn,event_id) SELECT room_id,sn,id FROM events WHERE id=$1")
+        .bind::<diesel::sql_types::Text,_>(published["event_id"].as_str().unwrap())
+        .execute(&mut data::db()).await.unwrap();
+    for filter in [
+        empty.clone(),
+        serde_json::from_value(json!({"not_types":["*"]})).unwrap(),
+    ] {
+        let gap = load_timeline(
+            &sender,
+            &first_room,
+            Some(since),
+            Some(bound),
+            Some(&filter),
+        )
+        .await
+        .unwrap();
+        assert!(
+            gap.events.is_empty() && gap.limited,
+            "filtered gap lost discontinuity"
+        );
+    }
+    assert!(
+        !load_timeline(&sender, &first_room, Some(bound), Some(bound), Some(&empty))
+            .await
+            .unwrap()
+            .limited,
+        "gap escaped the captured window"
+    );
+    // Failed storage must not turn an incomplete frame set into a successful sync.
     diesel::sql_query("ALTER TABLE event_points RENAME TO review_missing_frame_points")
         .execute(&mut data::db())
         .await

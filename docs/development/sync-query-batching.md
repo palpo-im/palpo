@@ -6,8 +6,10 @@ soft-failure predicates as the scalar lookup apply. Work uses the captured respo
 window even if another event is published while the response is being built.
 
 An event section with `limit: 0`, `types: []` or `not_types: ["*"]` cannot return
-events. Timeline, ephemeral and room account-data payload queries are omitted for
-those sections. Partial type filters still run normally. Membership state,
+events. Ephemeral and room account-data payload queries are omitted for those
+sections. Timeline type filters that cannot match skip event reads while retaining
+publication-gap metadata. A timeline zero limit alone still probes one visible
+event to preserve its truncation flag. Partial type filters run normally. Membership state,
 one-time keys, sticky events, notification counts and independently enabled
 streams continue to be evaluated; a filtered room is not assumed to be inactive.
 
