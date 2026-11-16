@@ -140,7 +140,8 @@ async fn visible_pdu(user: &UserId, id: &EventId) -> AppResult<Option<(SnPduEven
     if pdu.sticky_duration_ms().is_none() || !room::user::is_joined(user, &pdu.room_id).await? {
         return Ok(None);
     }
-    if crate::event::is_ignored_pdu_by_ignored_users(&pdu, &crate::user::ignored_users(user).await)
+    if crate::user::ignored_users(user).await.contains(&pdu.sender)
+        || pdu.event_ty.to_string() == "org.matrix.dummy_event"
     {
         return Ok(None);
     }
@@ -236,6 +237,7 @@ pub(super) async fn collect(
                 .filter(events::soft_failed.eq(false))
                 .filter(events::is_rejected.eq(false))
                 .filter(events::is_redacted.eq(false))
+                .filter(events::ty.ne("org.matrix.dummy_event"))
                 .filter(events::sender_id.ne_all(&ignored))
                 .order(event_stickies::deliver_sn.asc())
                 .limit(limit)

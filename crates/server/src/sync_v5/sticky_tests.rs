@@ -104,7 +104,8 @@ async fn run() {
     let created = ok(
         &service,
         TestClient::post("http://localhost/_matrix/client/v3/createRoom")
-            .json(&json!({"room_version":"11","preset":"public_chat"})),
+            .json(&json!({"room_version":"11","preset":"public_chat",
+                "power_level_content_override":{"users":{"@alice:sticky.example":100,"@bob:sticky.example":100}}})),
         "alice",
     )
     .await;
@@ -321,11 +322,34 @@ async fn run() {
         "old unacknowledged page survived a new join period"
     );
 
+    // State events follow the same ignore policy when replaying an offered page.
+    let state=ok(&service,TestClient::put(format!("http://localhost/_matrix/client/v3/rooms/{room}/state/m.room.topic?org.matrix.msc4354.sticky_duration_ms=60000"))
+        .json(&json!({"topic":"sticky state"})),"bob").await["event_id"].as_str().unwrap().to_owned();
+    let mut no_scope = config(&room, "state-policy", 100);
+    no_scope["extensions"][EXT]["rooms"] = json!([]);
+    let state_base = sync(&service, no_scope, None).await;
+    let state_page = sync(
+        &service,
+        config(&room, "state-policy", 100),
+        state_base["pos"].as_str(),
+    )
+    .await;
+    assert!(ids(&state_page, &room).contains(&state));
     // Ignore rules apply independently of membership and sticky privileges.
     ok(&service,TestClient::put("http://localhost/_matrix/client/v3/user/@alice:sticky.example/account_data/m.ignored_user_list")
         .json(&json!({"ignored_users":{"@bob:sticky.example":{}}})),"alice").await;
     let ignored = sync(&service, config(&room, "ignored", 100), None).await;
     assert!(ids(&ignored, &room).is_empty());
+    let ignored_replay = sync(
+        &service,
+        config(&room, "state-policy", 100),
+        state_base["pos"].as_str(),
+    )
+    .await;
+    assert!(
+        ids(&ignored_replay, &room).is_empty(),
+        "cached sticky state bypassed an updated ignore rule"
+    );
     let (status, _) = send(
         &service,
         TestClient::post(
