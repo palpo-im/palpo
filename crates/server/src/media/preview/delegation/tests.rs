@@ -227,6 +227,7 @@ fn run(enabled: bool) {
                 Reply::Json(json!({"og:image":"https://untrusted.example/private"})),
                 Reply::Json(json!({"og:image":"mxc://invalid"})),
                 Reply::Json(json!({"og:title":{"nested":"invalid"}})),
+                Reply::Json(json!({"og:title":123})),
                 Reply::Json(json!({"og:image:width":-1})),
                 Reply::Text("x".repeat(2048)),
                 Reply::Redirect(last.origin.clone()),Reply::Timeout] {

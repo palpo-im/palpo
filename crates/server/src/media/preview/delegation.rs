@@ -76,6 +76,14 @@ fn validate_preview(value: Value) -> AppResult<Option<Value>> {
             return Err(invalid().into());
         }
     }
+    for key in ["og:title", "og:type", "og:description", "og:url"] {
+        if data
+            .get(key)
+            .is_some_and(|v| !v.is_null() && !v.is_string())
+        {
+            return Err(invalid().into());
+        }
+    }
     Ok(Some(value))
 }
 
@@ -140,8 +148,8 @@ pub(super) async fn preview(url: &Url, user: &UserId) -> AppResult<Option<Value>
     }
     // Share the existing admission bound with local previews. Drop this lease
     // before falling back locally, so fallback never requires nested permits.
-    let lease = PREVIEW_REQUESTS.try_enter(&format!("delegated:{user}:{url}"))?;
-    let _lock = lease.mutex.lock().await;
+    // Results are not cached, so same-URL requests need no serialization queue.
+    let _lease = PREVIEW_REQUESTS.try_enter(&format!("delegated:{user}:{url}"))?;
     check_destination(url).await?;
     for (provider, info, namespace) in providers {
         let exclusive = namespace.is_exclusive_match(url.as_str());
