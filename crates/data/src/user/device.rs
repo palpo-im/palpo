@@ -617,6 +617,47 @@ pub async fn delete_refresh_tokens(user_id: &UserId, device_id: &DeviceId) -> Da
     Ok(())
 }
 
+/// Bound the shared sync window at the last message actually included in this batch.
+/// Every stream in the response must use this boundary, so echoing next_batch cannot
+/// acknowledge or skip an inbox message omitted by the count limit.
+pub async fn sync_to_device_until(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    since_sn: Seqnum,
+    until_sn: Seqnum,
+    limit: usize,
+    max_bytes: usize,
+) -> DataResult<Seqnum> {
+    if limit == 0 {
+        return Err(DataError::public("to-device batch limit must be positive"));
+    }
+    let rows = device_inboxes::table
+        .filter(device_inboxes::user_id.eq(user_id))
+        .filter(device_inboxes::device_id.eq(device_id))
+        .filter(device_inboxes::occur_sn.ge(since_sn))
+        .filter(device_inboxes::occur_sn.le(until_sn))
+        .order(device_inboxes::occur_sn.asc())
+        .limit(i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX))
+        .select((device_inboxes::occur_sn, device_inboxes::json_data))
+        .load::<(Seqnum, serde_json::Value)>(&mut crate::db())
+        .await?;
+    let mut bytes = 2usize; // Array delimiters, plus one comma per subsequent item.
+    let mut previous = until_sn;
+    for (count, (position, event)) in rows.into_iter().enumerate() {
+        let event_bytes = serde_json::to_vec(&event)?
+            .len()
+            .saturating_add(usize::from(count > 0));
+        if count >= limit || (count > 0 && bytes.saturating_add(event_bytes) > max_bytes) {
+            return Ok(previous);
+        }
+        // Even a single over-budget event must be delivered, never silently dropped.
+        // Inbox sequence numbers are allocated per delivery, before the fenced snapshot.
+        bytes = bytes.saturating_add(event_bytes);
+        previous = position;
+    }
+    Ok(until_sn)
+}
+
 pub async fn get_to_device_events(
     user_id: &UserId,
     device_id: &DeviceId,

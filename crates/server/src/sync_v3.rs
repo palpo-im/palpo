@@ -189,6 +189,18 @@ pub async fn sync_events(
     } else {
         None
     };
+    // Snapshot fencing above ensures all earlier inbox allocations have committed.
+    // Limit the entire response window, not just the returned vector: a high-water
+    // token past omitted messages would delete them on the next sync ACK.
+    let curr_sn = data::user::device::sync_to_device_until(
+        sender_id,
+        device_id,
+        since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn(),
+        curr_sn,
+        100,
+        512 * 1024,
+    )
+    .await?;
     let invite_batch = args
         .since
         .as_deref()
@@ -2052,3 +2064,6 @@ mod protocol_contract_tests;
 
 #[cfg(test)]
 mod account_data_publication_tests;
+
+#[cfg(test)]
+mod to_device_batch_tests;
