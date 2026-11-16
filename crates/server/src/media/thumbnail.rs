@@ -124,4 +124,37 @@ mod thumbnail_cpu_tests {
             (None, bytes)
         );
     }
+
+    #[test]
+    fn exr_decoding_and_png_thumbnail_remain_available() {
+        let pixels = image::ImageBuffer::from_pixel(17, 9, image::Rgb([0.5f32, 0.25, 0.125]));
+        let mut source = Vec::new();
+        image::DynamicImage::ImageRgb32F(pixels)
+            .write_to(&mut Cursor::new(&mut source), image::ImageFormat::OpenExr)
+            .unwrap();
+        let (generated, original) = create_thumbnail(source, 8, 4, false).unwrap();
+        assert!(original.is_empty());
+        let thumbnail = image::load_from_memory(&generated.unwrap())
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(thumbnail.dimensions(), (8, 4));
+        for pixel in thumbnail.pixels() {
+            for (actual, expected) in pixel.0.into_iter().zip([128u8, 64, 32]) {
+                assert!(actual.abs_diff(expected) <= 1);
+            }
+        }
+    }
+
+    #[test]
+    fn default_avif_encoding_capability_remains_available() {
+        let pixels = image::ImageBuffer::from_pixel(17, 19, image::Rgb([40u8, 80, 120]));
+        let mut encoded = Vec::new();
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(&mut Cursor::new(&mut encoded), image::ImageFormat::Avif)
+            .unwrap();
+        assert!(encoded.len() > 32);
+        assert_eq!(&encoded[4..8], b"ftyp");
+        assert_eq!(&encoded[8..12], b"avif");
+        assert!(encoded.windows(4).any(|part| part == b"mdat"));
+    }
 }

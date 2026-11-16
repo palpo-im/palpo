@@ -160,3 +160,7 @@ large_enum_variant = "allow"
 [profile.release]
 codegen-units = 1
 lto = true
+
+# Preserve AVIF encoding with the compatible 0.8 maintenance backport.
+[patch.crates-io]
+rav1e = { git = "https://github.com/chrislearn/rav1e", rev = "b1af6dfed0c7d413700cc81eb7d194b764295451" }
