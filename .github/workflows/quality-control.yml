@@ -133,6 +133,9 @@ jobs:
       - name: Isolated sliding sync v4 protocol feature
         run: cargo test --locked -p palpo-core --no-default-features --features unstable-msc4186 client::sync_events::v4::tests
 
+      - name: Isolated thread update protocol feature
+        run: cargo test --locked -p palpo-core --no-default-features --features unstable-msc4360 client::thread_updates::tests
+
       - name: PostgreSQL regression tests
         env:
           PALPO_TEST_DATABASE_URL: postgres://palpo_test:palpo_test@localhost/palpo_test

@@ -35,6 +35,8 @@ pub mod space;
 pub mod state;
 pub mod sync_events;
 pub mod tag;
+#[cfg(feature = "unstable-msc4360")]
+pub mod thread_updates;
 pub mod typing;
 pub mod uiaa;
 pub mod user;

@@ -105,6 +105,8 @@ impl SyncEventsReqBody {
 pub mod request {
     use super::{BTreeMap, Deserialize, Serialize, StateEventType, UInt};
     use crate::OwnedRoomId;
+    #[cfg(feature = "unstable-msc4360")]
+    pub use crate::client::thread_updates::ThreadsConfig as Threads;
     use crate::directory::RoomTypeFilter;
     use crate::events::tag::TagName;
 
@@ -350,6 +352,14 @@ pub mod request {
     #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
     #[non_exhaustive]
     pub struct Extensions {
+        /// Cross-room thread updates, enabled separately for each request.
+        #[cfg(feature = "unstable-msc4360")]
+        #[serde(
+            default,
+            rename = "io.element.msc4360.threads",
+            skip_serializing_if = "Threads::is_disabled"
+        )]
+        pub threads: Threads,
         /// Configure the to-device extension.
         #[serde(default, skip_serializing_if = "ToDevice::is_disabled")]
         pub to_device: ToDevice,
@@ -420,6 +430,8 @@ pub mod request {
         /// Whether all the extensions are disabled.
         pub fn is_empty(&self) -> bool {
             let Self {
+                #[cfg(feature = "unstable-msc4360")]
+                threads,
                 to_device,
                 e2ee,
                 account_data,
@@ -443,6 +455,11 @@ pub mod request {
                 && receipts.is_disabled()
                 && typing.is_disabled()
                 && other.is_empty();
+
+            #[cfg(feature = "unstable-msc4360")]
+            {
+                empty &= threads.is_disabled();
+            }
 
             #[cfg(feature = "unstable-msc4308")]
             {
@@ -835,6 +852,8 @@ pub mod response {
     use crate::OneTimeKeyAlgorithm;
     #[cfg(feature = "unstable-msc4308")]
     use crate::OwnedEventId;
+    #[cfg(feature = "unstable-msc4360")]
+    pub use crate::client::thread_updates::{ThreadUpdate, Threads};
     use crate::events::receipt::ReceiptEventContent;
     use crate::events::room::member::MembershipState;
     use crate::events::typing::TypingEventContent;
@@ -1161,6 +1180,14 @@ pub mod response {
     #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     #[non_exhaustive]
     pub struct Extensions {
+        /// Cross-room thread changes, with independent pagination tokens.
+        #[cfg(feature = "unstable-msc4360")]
+        #[serde(
+            default,
+            rename = "io.element.msc4360.threads",
+            skip_serializing_if = "Threads::is_empty"
+        )]
+        pub threads: Threads,
         /// To-device extension response.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub to_device: Option<ToDevice>,
@@ -1231,6 +1258,8 @@ pub mod response {
         /// Whether the extension data is empty.
         pub fn is_empty(&self) -> bool {
             let Self {
+                #[cfg(feature = "unstable-msc4360")]
+                threads,
                 to_device,
                 e2ee,
                 account_data,
@@ -1254,6 +1283,11 @@ pub mod response {
                 && receipts.is_empty()
                 && typing.is_empty()
                 && other.is_empty();
+
+            #[cfg(feature = "unstable-msc4360")]
+            {
+                empty &= threads.is_empty();
+            }
 
             #[cfg(feature = "unstable-msc4308")]
             {
