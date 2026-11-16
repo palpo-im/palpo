@@ -128,12 +128,16 @@ jobs:
           git -C /tmp/complement fetch --depth 1 origin "$COMPLEMENT_REVISION"
           git -C /tmp/complement checkout --detach FETCH_HEAD
 
-      - name: Apply audited Complement registration handshake
+      - name: Apply audited Complement compatibility patches
         run: |
           git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/registration-uiaa.patch"
           git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/registration-uiaa.patch"
+          git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/public-rooms-pagination.patch"
+          git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/public-rooms-pagination.patch"
+          cp tests/complement/overlays/public_rooms_pagination_test.go /tmp/complement/tests/csapi/
           cd /tmp/complement
           go test ./internal/instruction -count=1
+          go test ./tests/csapi/public_rooms_pagination_test.go -count=1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -256,12 +260,16 @@ jobs:
           git -C /tmp/synapse checkout --detach FETCH_HEAD
           test "$(git -C /tmp/synapse rev-parse HEAD)" = "$SYNAPSE_REVISION"
 
-      - name: Apply audited Complement registration handshake
+      - name: Apply audited Complement compatibility patches
         run: |
           git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/registration-uiaa.patch"
           git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/registration-uiaa.patch"
+          git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/public-rooms-pagination.patch"
+          git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/public-rooms-pagination.patch"
+          cp tests/complement/overlays/public_rooms_pagination_test.go /tmp/complement/tests/csapi/
           cd /tmp/complement
           go test ./internal/instruction -count=1
+          go test ./tests/csapi/public_rooms_pagination_test.go -count=1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

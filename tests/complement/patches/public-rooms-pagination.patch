@@ -1,0 +1,37 @@
+diff --git a/tests/csapi/apidoc_room_state_test.go b/tests/csapi/apidoc_room_state_test.go
+index ff085ef..7878f08 100644
+--- a/tests/csapi/apidoc_room_state_test.go
++++ b/tests/csapi/apidoc_room_state_test.go
+@@ -112,26 +112,16 @@ func TestRoomState(t *testing.T) {
+ 
+ 			authedClient.MustDo(t, "GET", []string{"_matrix", "client", "v3", "publicRooms"},
+ 				client.WithRetryUntil(3*time.Second, func(res *http.Response) bool {
+-					foundRoom := false
+-
+-					must.MatchResponse(t, res, match.HTTPResponse{
+-						JSON: []match.JSON{
+-							match.JSONKeyPresent("chunk"),
+-							match.JSONArrayEach("chunk", func(val gjson.Result) error {
+-								gotRoomID := val.Get("room_id").Str
+-								if gotRoomID == roomID {
+-									foundRoom = true
+-									return nil
+-								}
+-								return nil
+-							}),
+-						},
++					foundRoom, err := publicRoomsContain(res, roomID, func(since string) (*http.Response, error) {
++						return authedClient.MustDo(t, "GET", []string{"_matrix", "client", "v3", "publicRooms"},
++							client.WithQueries(url.Values{"since": {since}})), nil
+ 					})
+-
++					if err != nil {
++						t.Fatalf("publicRooms traversal failed: %s", err)
++					}
+ 					if !foundRoom {
+ 						t.Logf("failed to find room with id: %s", roomID)
+ 					}
+-
+ 					return foundRoom
+ 				}),
+ 			)
