@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use salvo::prelude::*;
 use salvo::test::{RequestBuilder, ResponseExt, TestClient};
 use serde_json::{Value, json};
@@ -605,4 +607,454 @@ async fn seed_notification_summaries(user: &UserId, room: &RoomId, root: &str) {
         .unwrap();
     diesel::sql_query("INSERT INTO event_push_summaries(user_id,room_id,notification_count,highlight_count,unread_count,stream_ordering,thread_id) VALUES($1,$2,3,1,5,0,NULL),($1,$2,2,1,7,0,$3)")
         .bind::<Text,_>(user.as_str()).bind::<Text,_>(room.as_str()).bind::<Text,_>(root).execute(&mut data::db()).await.unwrap();
+}
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
+fn review_filtered_sync_skips_inert_rooms_without_losing_sticky_or_read_updates() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(filtered_inert_rooms());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn filtered_inert_rooms() {
+    use horme::RunQueryDsl;
+    let (service, room, sender, peer) = setup().await;
+    let mut rooms = vec![room.clone()];
+    for _ in 0..2 {
+        let created = request(
+            TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+                .add_header("Authorization", "Bearer alice", true)
+                .json(&json!({"room_version":"11","preset":"public_chat"})),
+            &service,
+        )
+        .await;
+        rooms.push(created["room_id"].as_str().unwrap().try_into().unwrap());
+    }
+    let initial = sync_events(
+        &sender,
+        "D".into(),
+        &serde_json::from_value(json!({})).unwrap(),
+    )
+    .await
+    .unwrap();
+    let filter = json!({"room":{
+        "timeline":{"not_types":["*"]},"state":{"not_types":["*"]},
+        "ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]}
+    }});
+    let mut args: SyncEventsReqArgs =
+        serde_json::from_value(json!({"since":initial.next_batch,"filter":filter.to_string()}))
+            .unwrap();
+    data::next_sn().await.unwrap();
+    let spy = crate::test_database::sql_spy::SqlSpy::install().await;
+    // A failed per-room loader must be irrelevant when no room payload or
+    // independent membership/notification/sticky stream needs it.
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = Some(room.clone());
+    let inert = sync_events(&sender, "D".into(), &args).await;
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = None;
+    assert!(inert.unwrap().rooms.join.is_empty());
+    let queries = spy.snapshot();
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|q| q.contains("event_receipts"))
+            .count(),
+        1,
+        "{queries:#?}"
+    );
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|q| q.contains("event_stickies"))
+            .count(),
+        1,
+        "{queries:#?}"
+    );
+    assert!(!queries.iter().any(|q| q.contains("event_push_summaries")));
+    spy.assert_coverage().await;
+    spy.uninstall().await;
+
+    let full_state: SyncEventsReqArgs = serde_json::from_value(json!({
+        "since":args.since,"filter":filter.to_string(),"full_state":true
+    }))
+    .unwrap();
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = Some(room.clone());
+    let needed = sync_events(&sender, "D".into(), &full_state).await;
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = None;
+    assert!(
+        needed.is_err(),
+        "full-state loads must remain independent of the optimization"
+    );
+
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/state/m.room.member/{peer}"
+        ))
+        .add_header("Authorization", "Bearer bob", true)
+        .json(&json!({"membership":"join","displayname":"updated"})),
+        &service,
+    )
+    .await;
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = Some(room.clone());
+    let membership = sync_events(&sender, "D".into(), &args).await;
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = None;
+    assert!(
+        membership.is_err(),
+        "changed membership frames require their independent streams"
+    );
+    let recovered = sync_events(&sender, "D".into(), &args).await.unwrap();
+    args.since = Some(recovered.next_batch);
+
+    let sticky = request(TestClient::put(format!("http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/inert-sticky?org.matrix.msc4354.sticky_duration_ms=60000"))
+        .add_header("Authorization","Bearer alice",true)
+        .json(&json!({"msgtype":"m.text","body":"sticky"})), &service).await;
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = Some(room.clone());
+    let needed = sync_events(&sender, "D".into(), &args).await;
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = None;
+    assert!(
+        needed.is_err(),
+        "sticky delivery must survive all four event filters"
+    );
+    let delivered = sync_events(&sender, "D".into(), &args).await.unwrap();
+    let events = &delivered.rooms.join[&room].sticky.events;
+    assert_eq!(events.len(), 1);
+    let event: Value = serde_json::from_str(events[0].as_str()).unwrap();
+    assert_eq!(event["event_id"], sticky["event_id"]);
+    assert!(delivered.rooms.join[&room].timeline.events.is_empty());
+    args.since = Some(delivered.next_batch);
+
+    let message = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/inert-read"
+        ))
+        .add_header("Authorization", "Bearer bob", true)
+        .json(&json!({"msgtype":"m.text","body":"read me"})),
+        &service,
+    )
+    .await;
+    request(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/receipt/m.read/{}",
+            message["event_id"].as_str().unwrap()
+        ))
+        .add_header("Authorization", "Bearer alice", true)
+        .json(&json!({})),
+        &service,
+    )
+    .await;
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = Some(room.clone());
+    let needed = sync_events(&sender, "D".into(), &args).await;
+    *joined_room_failure_tests::FAIL_ROOM.lock().unwrap() = None;
+    assert!(
+        needed.is_err(),
+        "read progress still emits notification counters"
+    );
+    let delivered = sync_events(&sender, "D".into(), &args).await.unwrap();
+    assert_eq!(
+        delivered.rooms.join[&room]
+            .unread_notifications
+            .notification_count,
+        Some(0)
+    );
+
+    seed_receipt_history(&sender, &room, message["event_id"].as_str().unwrap()).await;
+    let expected = room::user::last_read_notification(&sender, &room)
+        .await
+        .unwrap();
+    let other = request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/send/m.room.message/inert-other-user"
+        ))
+        .add_header("Authorization", "Bearer alice", true)
+        .json(&json!({"msgtype":"m.text","body":"other"})),
+        &service,
+    )
+    .await;
+    request(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/receipt/m.read/{}",
+            other["event_id"].as_str().unwrap()
+        ))
+        .add_header("Authorization", "Bearer bob", true)
+        .json(&json!({})),
+        &service,
+    )
+    .await;
+    let mut many = rooms.clone();
+    many.extend((0..1000).map(|i| RoomId::parse(format!("!empty{i}:filtered.example")).unwrap()));
+    let spy = crate::test_database::sql_spy::SqlSpy::install().await;
+    let cursors = room::user::last_read_notifications(&sender, &many)
+        .await
+        .unwrap();
+    assert_eq!(
+        cursors[&room], expected,
+        "another user's later receipt must not change this cursor"
+    );
+    assert!(!cursors.contains_key(&rooms[1]));
+    assert!(
+        spy.snapshot()
+            .iter()
+            .filter(|q| q.contains("event_receipts"))
+            .count()
+            <= 5,
+        "receipt reads grew with room count"
+    );
+    spy.assert_coverage().await;
+    spy.uninstall().await;
+    assert_receipt_probe_plan(&sender, &rooms).await;
+    diesel::sql_query(
+        "ALTER TABLE event_receipts_notification_cursors RENAME TO review_receipts_unavailable",
+    )
+    .execute(&mut data::db())
+    .await
+    .unwrap();
+    let failed = room::user::last_read_notifications(&sender, &rooms).await;
+    diesel::sql_query(
+        "ALTER TABLE review_receipts_unavailable RENAME TO event_receipts_notification_cursors",
+    )
+    .execute(&mut data::db())
+    .await
+    .unwrap();
+    assert!(
+        failed.is_err(),
+        "failed cursor batches must not acknowledge unread work"
+    );
+    assert_eq!(
+        room::user::last_read_notifications(&sender, &rooms)
+            .await
+            .unwrap()[&room],
+        expected
+    );
+
+    // Reading an old event must still publish fresh notification counts. Its
+    // event position predates `since`; only the receipt's publication is new.
+    args.since = Some(delivered.next_batch);
+    request(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{room}/receipt/m.read/{}",
+            message["event_id"].as_str().unwrap()
+        ))
+        .add_header("Authorization", "Bearer alice", true)
+        .json(&json!({})),
+        &service,
+    )
+    .await;
+    let old_read = sync_events(&sender, "D".into(), &args).await.unwrap();
+    assert_eq!(
+        old_read.rooms.join[&room]
+            .unread_notifications
+            .notification_count,
+        Some(0)
+    );
+
+    receipt_publication_fence(&sender, &room, message["event_id"].as_str().unwrap()).await;
+    receipt_fence_keeps_unrelated_inboxes_independent(&sender).await;
+}
+
+async fn receipt_fence_keeps_unrelated_inboxes_independent(user: &UserId) {
+    use diesel::sql_types::BigInt;
+    use diesel_async::SimpleAsyncConnection as _;
+    use horme::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Waiting {
+        #[diesel(sql_type = BigInt)]
+        count: i64,
+    }
+    data::user::device::create_device(
+        user,
+        &OwnedDeviceId::from("UNRELATED"),
+        "receipt-unrelated-device",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let mut gate = data::checkout().await.unwrap();
+    gate.batch_execute("BEGIN").await.unwrap();
+    data::user::device::lock_inbox_stream(&mut gate, user, "D".into())
+        .await
+        .unwrap();
+    let blocked_user = user.to_owned();
+    let blocked = tokio::spawn(async move {
+        crate::event::sticky::curr_sn_after_sync_writes(&blocked_user, "D".into()).await
+    });
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let waiting = diesel::sql_query("SELECT count(*) AS count FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND NOT granted")
+                .get_result::<Waiting>(&mut data::db()).await.unwrap();
+            if waiting.count > 0 { break; }
+            assert!(!blocked.is_finished(), "the first snapshot must wait for its inbox");
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    let independent = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::event::sticky::curr_sn_after_sync_writes(user, "UNRELATED".into()),
+    )
+    .await;
+    gate.batch_execute("COMMIT").await.unwrap();
+    drop(gate);
+    tokio::time::timeout(Duration::from_secs(4), blocked)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    independent
+        .expect("a slow inbox must not hold the global receipt snapshot fence")
+        .unwrap();
+}
+
+async fn seed_receipt_history(user: &UserId, room: &RoomId, event: &str) {
+    use diesel::sql_types::{BigInt, Text};
+    use horme::RunQueryDsl;
+    let event = EventId::parse(event).unwrap();
+    let event_sn = crate::event::get_event_sn(&event).await.unwrap();
+    diesel::sql_query("INSERT INTO event_receipts (sn, ty, room_id, user_id, event_id, event_sn, thread_id, json_data, receipt_at) SELECT nextval('occur_sn_seq'), 'm.read.private', $2, $1, $3, $4, NULL, '{}'::jsonb, 0 FROM generate_series(1, 30000)")
+        .bind::<Text,_>(user.as_str()).bind::<Text,_>(room.as_str())
+        .bind::<Text,_>(event.as_str()).bind::<BigInt,_>(event_sn)
+        .execute(&mut data::db()).await.unwrap();
+    diesel::sql_query("ANALYZE event_receipts")
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    let mut row = data::room::receipt::last_private_read_receipt(user, room)
+        .await
+        .unwrap()
+        .unwrap();
+    let older = data::next_sn().await.unwrap();
+    let newer = data::next_sn().await.unwrap();
+    for sn in [newer, older] {
+        row.sn = sn;
+        diesel::insert_into(data::schema::event_receipts::table)
+            .values(&row)
+            .execute(&mut data::db())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        room::user::last_read_notification(user, room)
+            .await
+            .unwrap(),
+        newer
+    );
+}
+
+async fn assert_receipt_probe_plan(user: &UserId, rooms: &[OwnedRoomId]) {
+    use diesel::sql_types::{Array, Json, Text};
+    use horme::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Plan {
+        #[diesel(sql_type = Json, column_name = "QUERY PLAN")]
+        value: Value,
+    }
+    let explain = diesel::sql_query(format!(
+        "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {}",
+        room::user::NOTIFICATION_CURSOR_QUERY
+    ))
+    .bind::<Text, _>(user.as_str())
+    .bind::<Array<Text>, _>(rooms.iter().map(|room| room.as_str()).collect::<Vec<_>>())
+    .get_result::<Plan>(&mut data::db())
+    .await
+    .unwrap();
+    fn probe(node: &Value) -> Option<&Value> {
+        assert_ne!(
+            node["Relation Name"], "event_receipts",
+            "sync scanned the receipt history"
+        );
+        if node["Relation Name"] == "event_receipts_notification_cursors" {
+            return Some(node);
+        }
+        node.get("Plans")?.as_array()?.iter().find_map(probe)
+    }
+    let index = probe(&explain.value[0]["Plan"]).expect("sync must read the watermark projection");
+    assert!(
+        index["Actual Rows"].as_f64().unwrap() <= rooms.len() as f64,
+        "{index}"
+    );
+}
+
+async fn receipt_publication_fence(user: &UserId, room: &RoomId, event: &str) {
+    use diesel::sql_types::BigInt;
+    use horme::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Waiting {
+        #[diesel(sql_type = BigInt)]
+        count: i64,
+    }
+    const LOCK: i64 = 0x50414c52435054;
+    let event = EventId::parse(event).unwrap();
+    let event_sn = crate::event::get_event_sn(&event).await.unwrap();
+    for rollback in [false, true] {
+        let before = room::user::last_read_notification(user, room)
+            .await
+            .unwrap();
+        let receipt = data::room::DbReceipt {
+            sn: 0,
+            ty: "m.read.private".into(),
+            room_id: room.to_owned(),
+            user_id: user.to_owned(),
+            event_id: event.clone(),
+            event_sn,
+            thread_id: None,
+            json_data: json!({}),
+            receipt_at: UnixMillis::now(),
+        };
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn(async move {
+            data::db()
+                .transaction::<_, data::DataError, _>(async |conn| {
+                    data::room::receipt::publish_receipt_with_conn(conn, &receipt).await?;
+                    let sn = diesel::select(diesel::dsl::sql::<BigInt>("currval('occur_sn_seq')"))
+                        .get_result::<Seqnum>(conn)
+                        .await?;
+                    ready_tx.send(sn).unwrap();
+                    release_rx.await.unwrap();
+                    if rollback {
+                        Err(data::DataError::internal("intentional receipt rollback"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .await
+        });
+        let published = tokio::time::timeout(Duration::from_secs(4), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot_user = user.to_owned();
+        let snapshot = tokio::spawn(async move {
+            crate::event::sticky::curr_sn_after_sync_writes(&snapshot_user, "D".into())
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let waiting = diesel::sql_query("SELECT count(*) AS count FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND NOT granted AND mode='ExclusiveLock' AND objsubid=1 AND classid::bigint=$1 AND objid::bigint=$2")
+                    .bind::<BigInt,_>(LOCK >> 32).bind::<BigInt,_>(LOCK & 0xffff_ffff)
+                    .get_result::<Waiting>(&mut data::db()).await.unwrap();
+                if waiting.count > 0 { break; }
+                assert!(!snapshot.is_finished(), "snapshot crossed an uncommitted receipt");
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("sync cursor must wait for receipt publication");
+        assert!(!snapshot.is_finished());
+        release_tx.send(()).unwrap();
+        assert_eq!(writer.await.unwrap().is_err(), rollback);
+        let cursor = snapshot.await.unwrap();
+        assert!(cursor >= published);
+        let committed = room::user::last_read_notifications(user, &[room.to_owned()])
+            .await
+            .unwrap()[room];
+        assert_eq!(committed, if rollback { before } else { published });
+    }
 }

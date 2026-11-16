@@ -10,9 +10,9 @@ use crate::core::events::receipt::{
 };
 use crate::core::federation::transaction::Edu;
 use crate::core::identifiers::*;
+use crate::data::diesel_exists;
 use crate::data::room::DbReceipt;
 use crate::data::schema::{events, threads};
-use crate::data::{diesel_exists, next_sn};
 use crate::{AppResult, MatrixError, data, room, sending};
 
 /// Resolve the notification/receipt scope once from a bounded relation chain.
@@ -187,7 +187,7 @@ pub async fn record_client_receipt(
         return Err(MatrixError::invalid_param("Unsupported read receipt type.").into());
     }
     let row = DbReceipt {
-        sn: next_sn().await?,
+        sn: 0,
         ty: receipt_type.to_string(),
         room_id: room_id.to_owned(),
         user_id: user_id.to_owned(),
@@ -235,7 +235,7 @@ pub async fn update_read(
                 };
                 let receipt_at = receipt.ts.unwrap_or_else(UnixMillis::now);
                 let receipt = DbReceipt {
-                    sn: next_sn().await?,
+                    sn: 0,
                     ty: receipt_ty.to_string(),
                     room_id: room_id.to_owned(),
                     user_id: user_id.to_owned(),

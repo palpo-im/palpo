@@ -144,10 +144,7 @@ pub async fn record_read_and_clear(receipt: &DbReceipt, scope: &ReceiptThread) -
     crate::data::db()
         .transaction::<_, AppError, _>(async |conn| {
             lock_summary(conn, &receipt.user_id, &receipt.room_id).await?;
-            diesel::insert_into(event_receipts::table)
-                .values(receipt)
-                .execute(conn)
-                .await?;
+            crate::data::room::receipt::publish_receipt_with_conn(conn, receipt).await?;
             clear_locked(
                 conn,
                 &receipt.user_id,

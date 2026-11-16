@@ -379,6 +379,17 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::full_text_search::*;
 
+    event_receipts_notification_cursors (user_id, room_id) {
+        user_id -> Text,
+        room_id -> Text,
+        sn -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::full_text_search::*;
+
     event_receipts (sn) {
         sn -> Int8,
         ty -> Text,
@@ -1315,6 +1326,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     event_push_actions,
     event_push_summaries,
     event_receipts,
+    event_receipts_notification_cursors,
     event_relations,
     event_searches,
     event_stickies,
