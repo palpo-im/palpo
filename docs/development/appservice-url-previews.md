@@ -36,7 +36,7 @@ The provider remains responsible for protecting its own outbound connections.
 A nonempty HTTP 200 OpenGraph object wins. Other statuses, timeout, malformed or
 oversized responses try the next matching provider. `null` or `{}` means no
 preview. An exclusive match ends selection: an empty success returns `{}`, and
-a failed provider returns an error. Neither case falls back to another provider
+a failed provider returns HTTP 500. Neither case falls back to another provider
 or a local lookup. When no nonexclusive provider succeeds, the existing local
 preview pipeline and its public cache are used.
 

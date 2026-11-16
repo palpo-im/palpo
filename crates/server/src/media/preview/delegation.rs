@@ -138,7 +138,7 @@ pub(super) async fn preview(url: &Url, user: &UserId) -> AppResult<Option<Value>
             let namespace = crate::appservice::NamespaceRegex::try_from(
                 info.registration.namespaces.preview_urls.clone(),
             )
-            .map_err(|_| MatrixError::unknown("Invalid preview provider namespace"))?;
+            .map_err(|_| crate::AppError::internal("Invalid preview provider namespace"))?;
             if namespace.is_match(url.as_str()) {
                 providers.push((provider, info, namespace));
             }
@@ -168,7 +168,9 @@ pub(super) async fn preview(url: &Url, user: &UserId) -> AppResult<Option<Value>
             Ok(Ok(None)) if exclusive => return Ok(Some(json!({}))),
             Ok(Ok(None)) => {}
             _ if exclusive => {
-                return Err(MatrixError::unknown("Exclusive preview provider failed").into());
+                return Err(crate::AppError::internal(
+                    "Exclusive preview provider failed",
+                ));
             }
             _ => {}
         }
