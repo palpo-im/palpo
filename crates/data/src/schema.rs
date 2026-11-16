@@ -630,6 +630,7 @@ diesel::table! {
         room_id -> Text,
         created_by -> Text,
         created_at -> Int8,
+        generation -> Int8,
     }
 }
 

@@ -647,11 +647,8 @@ pub async fn delete_room(
     let members = room::local_users_in_room(&room_id).await?;
     let mut kicked_users = Vec::new();
 
-    let local_aliases: Vec<String> = room::local_aliases_for_room(&room_id)
-        .await?
-        .into_iter()
-        .map(|a| a.to_string())
-        .collect();
+    let snapshots = crate::data::room::alias_snapshots_for_room(&room_id).await?;
+    let local_aliases: Vec<String> = snapshots.iter().map(|a| a.alias_id.to_string()).collect();
 
     if body.block {
         room::ban_room(&room_id, true).await?;
@@ -672,10 +669,16 @@ pub async fn delete_room(
         .await?;
         kicked_users.push(member.to_string());
     }
-    for alias in &local_aliases {
-        let alias = RoomAliasId::parse(alias)
-            .map_err(|_| crate::AppError::internal("Invalid stored room alias"))?;
-        crate::data::room::remove_alias(&alias).await?;
+    for expected in snapshots {
+        if !crate::data::room::remove_alias(&expected).await?
+            && crate::data::room::get_alias(&expected.alias_id)
+                .await?
+                .is_some_and(|current| current.room_id == room_id)
+        {
+            return Err(room::alias::alias_conflict(
+                "Room alias changed during room deletion; retry",
+            ));
+        }
     }
     if body.purge {
         crate::data::room::timeline::purge_room_history(&room_id, i64::MAX).await?;

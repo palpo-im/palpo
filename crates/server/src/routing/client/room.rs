@@ -711,7 +711,7 @@ async fn upgrade(
 
     // Moves any local aliases to the new room
     for alias in room::local_aliases_for_room(&room_id).await? {
-        room::set_alias(&new_room_id, &alias, sender_id).await?;
+        room::alias::move_alias(&alias, &room_id, &new_room_id, sender_id).await?;
     }
 
     // Get the old room power levels
@@ -880,6 +880,7 @@ pub(super) async fn create_room(
         let alias = RoomAliasId::parse(format!("#{}:{}", localpart, conf.server_name))
             .map_err(|_| MatrixError::invalid_param("Invalid alias."))?;
 
+        room::alias::check_client_alias_namespace(&alias, authed.appservice()).await?;
         if room::resolve_local_alias(&alias).await.is_ok() {
             return Err(MatrixError::room_in_use("room alias already exists").into());
         }
@@ -1177,8 +1178,10 @@ pub(super) async fn create_room(
     }
 
     // Homeserver specific stuff
-    if let Some(alias) = alias {
-        room::set_alias(&room_id, &alias, sender_id).await?;
+    if let Some(alias) = alias
+        && !room::alias::claim_alias(&room_id, &alias, sender_id).await?
+    {
+        return Err(MatrixError::room_in_use("room alias already exists").into());
     }
 
     if body.visibility == Visibility::Public {

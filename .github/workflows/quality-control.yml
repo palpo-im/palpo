@@ -291,6 +291,21 @@ jobs:
             done
           done
 
+      - name: Alias mutation and generation upgrade regressions
+        timeout-minutes: 15
+        run: |
+          # Each integration case owns process-wide startup state and requires
+          # an empty database. Keep them out of the shared library test batch.
+          cargo test --locked --workspace --all-features --test alias_atomic_contracts --test alias_generation_upgrade --no-run
+          cargo test --locked --workspace --all-features --test alias_atomic_contracts -- --list --ignored --exact alias_mutations_are_atomic_and_report_mapping_conflicts | grep -F 'alias_mutations_are_atomic_and_report_mapping_conflicts: test'
+          sudo -u postgres createdb -O palpo_test palpo_alias_contracts
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_alias_contracts \
+            cargo test --locked --workspace --all-features --test alias_atomic_contracts -- --ignored --exact alias_mutations_are_atomic_and_report_mapping_conflicts
+          cargo test --locked --workspace --all-features --test alias_generation_upgrade -- --list --ignored --exact legacy_alias_generations_upgrade_once_and_advance_on_same_value_updates | grep -F 'legacy_alias_generations_upgrade_once_and_advance_on_same_value_updates: test'
+          sudo -u postgres createdb -O palpo_test palpo_alias_generation_upgrade
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_alias_generation_upgrade \
+            cargo test --locked --workspace --all-features --test alias_generation_upgrade -- --ignored --exact legacy_alias_generations_upgrade_once_and_advance_on_same_value_updates
+
       - name: Embedding startup PostgreSQL regression
         timeout-minutes: 10
         run: |
