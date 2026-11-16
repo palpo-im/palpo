@@ -271,6 +271,13 @@ jobs:
               cargo test --locked -p palpo --lib "${features[@]}" "$module"
             done
             index=0
+            if [ "$mode" = all ]; then
+              sticky_test=sync_v5::sticky::tests::review_sliding_sticky_delivery_ack_scope_and_restart
+              sudo -u postgres createdb -O palpo_test palpo_sliding_sticky
+              cargo test --locked -p palpo --lib --all-features "$sticky_test" -- --list --ignored --exact | grep -F "$sticky_test: test"
+              PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_sliding_sticky \
+                cargo test --locked -p palpo --lib --all-features "$sticky_test" -- --ignored --exact --test-threads=1
+            fi
             for test in "${cases[@]}"; do
               database="palpo_review_${mode}_${index}"
               sudo -u postgres createdb -O palpo_test "$database"

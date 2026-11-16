@@ -94,11 +94,12 @@ pub async fn curr_sn_after_sync_writes(
     let curr_sn =
         connect()
             .transaction::<_, crate::AppError, _>(async |conn| {
-                // Lock order: presence, typing, live/sticky, this inbox, keys, account data.
+                // Lock order: presence, typing, profiles, live/sticky, inbox, keys, account data.
                 // Key publishers use a shared stream lock; the short exclusive
                 // key snapshot waits for every in-flight key allocation.
                 crate::data::user::lock_presence_stream_shared(conn).await?;
                 crate::data::room::typing::lock_typing_stream_shared(conn).await?;
+                crate::data::user::lock_profile_stream_shared(conn).await?;
                 lock_sticky_stream_shared(conn).await?;
                 crate::data::user::device::lock_inbox_stream(conn, user_id, device_id).await?;
                 crate::data::user::key::lock_key_change_snapshot(conn).await?;

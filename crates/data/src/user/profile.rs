@@ -58,7 +58,8 @@ async fn lock_profile_stream(conn: &mut AsyncPgConnection) -> horme::Result<()> 
     Ok(())
 }
 
-async fn lock_profile_stream_shared(conn: &mut AsyncPgConnection) -> horme::Result<()> {
+/// Fence profile publication while capturing a multi-stream sync position.
+pub async fn lock_profile_stream_shared(conn: &mut AsyncPgConnection) -> horme::Result<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
         .bind::<diesel::sql_types::BigInt, _>(PROFILE_STREAM_LOCK_ID)
         .execute(conn)
