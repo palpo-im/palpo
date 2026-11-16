@@ -237,9 +237,7 @@ pub async fn sync_events(
         frames.clone()
     };
     for room_id in &all_joined_rooms {
-        let Some(&frame) = frames.get(room_id) else {
-            continue;
-        };
+        let frame = frames.get(room_id).copied();
         let (joined_room, _) = load_joined_room_with_frames(
             sender_id,
             device_id,
@@ -577,7 +575,7 @@ async fn load_joined_room_with_frames(
     _use_state_after: bool,
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
-    frames: Option<(i64, Option<i64>)>,
+    frames: Option<(Option<i64>, Option<i64>)>,
 ) -> AppResult<(JoinedRoom, Option<BatchToken>)> {
     #[cfg(test)]
     if joined_room_failure_tests::FAIL_ROOM
@@ -608,6 +606,9 @@ async fn load_joined_room_with_frames(
     // Another worker may already have appended state past this captured sync
     // window. Resolve the delta against the frame this response can include.
     let current_frame_id = if let Some((frame, _)) = frames {
+        let Some(frame) = frame else {
+            return Ok((JoinedRoom::default(), None));
+        };
         frame
     } else {
         match captured_sync_frame(room_id, until_sn).await {
