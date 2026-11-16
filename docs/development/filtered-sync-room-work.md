@@ -9,6 +9,8 @@ per user/room; sync never aggregates the append-only history. The migration
 installs its insert trigger before backfilling existing rows, and `GREATEST`
 keeps concurrent or out-of-order positions monotonic. The backfill runs outside
 the trigger-installation transaction so it does not hold that writer lock.
+The statement trigger groups only newly inserted rows, updating each watermark
+once per batch without rescanning history or repeatedly rewriting one cursor.
 Room-ID exclusions can also skip an unchanged frame.
 Changed membership frames still feed independent device and presence streams.
 Initial sync, `full_state`, peeks and requested thread-notification maps keep

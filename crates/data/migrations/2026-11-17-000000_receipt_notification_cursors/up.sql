@@ -13,17 +13,18 @@ CREATE OR REPLACE FUNCTION publish_receipt_notification_cursor() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     INSERT INTO event_receipts_notification_cursors (user_id, room_id, sn)
-    VALUES (NEW.user_id, NEW.room_id, NEW.sn)
+    SELECT user_id, room_id, MAX(sn) FROM published_receipts GROUP BY user_id, room_id
     ON CONFLICT (user_id, room_id) DO UPDATE
         SET sn = GREATEST(event_receipts_notification_cursors.sn, EXCLUDED.sn);
-    RETURN NEW;
+    RETURN NULL;
 END;
 $$;
 
 DROP TRIGGER IF EXISTS publish_receipt_notification_cursor ON event_receipts;
 CREATE TRIGGER publish_receipt_notification_cursor
     AFTER INSERT ON event_receipts
-    FOR EACH ROW EXECUTE FUNCTION publish_receipt_notification_cursor();
+    REFERENCING NEW TABLE AS published_receipts
+    FOR EACH STATEMENT EXECUTE FUNCTION publish_receipt_notification_cursor();
 COMMIT;
 
 INSERT INTO event_receipts_notification_cursors (user_id, room_id, sn)
