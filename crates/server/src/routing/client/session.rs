@@ -773,6 +773,7 @@ mod tests {
                 )],
                 aliases: Vec::new(),
                 rooms: Vec::new(),
+                preview_urls: Vec::new(),
             },
             rate_limited: None,
             protocols: None,

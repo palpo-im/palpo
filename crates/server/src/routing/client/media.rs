@@ -267,7 +267,7 @@ pub async fn preview_url(
     args: MediaPreviewReqArgs,
     depot: &mut Depot,
 ) -> JsonResult<MediaPreviewResBody> {
-    let _sender_id = depot.authed_info()?.user_id();
+    let sender_id = depot.authed_info()?.user_id();
 
     let url = Url::parse(&args.url)
         .map_err(|e| MatrixError::invalid_param(format!("Requested URL is not valid: {e}")))?;
@@ -276,7 +276,7 @@ pub async fn preview_url(
         return Err(MatrixError::forbidden("URL is not allowed to be previewed", None).into());
     }
 
-    let preview = crate::media::get_url_preview(&url).await?;
+    let preview = crate::media::get_url_preview_for_user(&url, sender_id).await?;
 
     let res_body = MediaPreviewResBody::from_serialize(&preview)
         .map_err(|e| MatrixError::unknown(format!("Failed to parse URL preview: {e}")))?;

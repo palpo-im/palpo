@@ -163,6 +163,8 @@ jobs:
           # A substring filter can pass with zero matches; assert all five cases.
           registered="$(cargo test --locked -p palpo-data --lib pool::tests:: -- --list --ignored)"
           cases=(
+            media::preview::delegation::tests::review_appservice_previews_opt_in_policy_and_failures
+            media::preview::delegation::tests::review_appservice_previews_disabled_uses_local_cache
             one_connection_supports_nested_queries_and_concurrent_handles
             failed_and_cancelled_queries_return_their_leases
             transaction_helpers_share_one_lease_and_rollback_releases_it

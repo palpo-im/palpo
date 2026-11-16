@@ -14,6 +14,8 @@ use crate::sending::resolver;
 use crate::utils::url_guard;
 use crate::{AppResult, TlsNameMap, config, data, storage, utils};
 
+mod delegation;
+
 // Includes requests waiting for the same URL, so both the lock table and the
 // work admitted past a cache miss have a hard bound. Excess callers retry
 // instead of building an unbounded semaphore/keyed-lock wait queue.
@@ -342,6 +344,16 @@ pub async fn get_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
         Ok(preview) => Ok(preview.into()),
         Err(_) => request_url_preview(url).await,
     }
+}
+
+/// Delegated results stay outside the shared, URL-only local preview cache.
+pub async fn get_url_preview_for_user(url: &Url, user: &UserId) -> AppResult<serde_json::Value> {
+    if !config::get().url_preview.appservice_providers.is_empty()
+        && let Some(preview) = delegation::preview(url, user).await?
+    {
+        return Ok(preview);
+    }
+    Ok(serde_json::to_value(get_url_preview(url).await?)?)
 }
 
 async fn request_url_preview(url: &Url) -> AppResult<UrlPreviewData> {
