@@ -3826,8 +3826,10 @@ mod tests {
     fn presence_acknowledgement_keeps_a_newer_queued_state() {
         let alice = UserId::parse("@alice:example.org").unwrap().to_owned();
         let bob = UserId::parse("@bob:example.org").unwrap().to_owned();
-        let mut cached = SlidingSyncCache::default();
-        cached.presence_queue = BTreeMap::from([(alice.clone(), 10), (bob.clone(), 30)]);
+        let mut cached = SlidingSyncCache {
+            presence_queue: BTreeMap::from([(alice.clone(), 10), (bob.clone(), 30)]),
+            ..Default::default()
+        };
         cached.pending_presence_users.insert(
             "batch-a".to_owned(),
             PendingPresenceUsers {

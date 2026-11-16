@@ -291,26 +291,6 @@ fn remove_advertised_alias(content: &mut serde_json::Value, target: &str) -> boo
     changed
 }
 
-#[cfg(test)]
-mod advertised_alias_tests {
-    use serde_json::json;
-
-    use super::remove_advertised_alias;
-    #[test]
-    fn removal_preserves_other_aliases_and_custom_content() {
-        let mut state = json!({"alias":"#main:example","alt_aliases":["#a:example","#b:example"],"org.example.custom":true});
-        assert!(remove_advertised_alias(&mut state, "#a:example"));
-        assert_eq!(
-            state,
-            json!({"alias":"#main:example","alt_aliases":["#b:example"],"org.example.custom":true})
-        );
-        assert!(!remove_advertised_alias(&mut state, "#missing:example"));
-        assert!(remove_advertised_alias(&mut state, "#main:example"));
-        assert_eq!(state["alt_aliases"], json!(["#b:example"]));
-        assert!(state.get("alias").is_none());
-    }
-}
-
 #[tracing::instrument]
 async fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<bool> {
     let room_id = resolve_local_alias(alias_id).await?;
@@ -338,5 +318,25 @@ async fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResu
     } else {
         error!("Room {} has no m.room.create event (VERY BAD)!", room_id);
         Err(AppError::public("Room has no m.room.create event"))
+    }
+}
+
+#[cfg(test)]
+mod advertised_alias_tests {
+    use serde_json::json;
+
+    use super::remove_advertised_alias;
+    #[test]
+    fn removal_preserves_other_aliases_and_custom_content() {
+        let mut state = json!({"alias":"#main:example","alt_aliases":["#a:example","#b:example"],"org.example.custom":true});
+        assert!(remove_advertised_alias(&mut state, "#a:example"));
+        assert_eq!(
+            state,
+            json!({"alias":"#main:example","alt_aliases":["#b:example"],"org.example.custom":true})
+        );
+        assert!(!remove_advertised_alias(&mut state, "#missing:example"));
+        assert!(remove_advertised_alias(&mut state, "#main:example"));
+        assert_eq!(state["alt_aliases"], json!(["#b:example"]));
+        assert!(state.get("alias").is_none());
     }
 }
