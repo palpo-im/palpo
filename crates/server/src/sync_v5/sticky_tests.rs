@@ -261,6 +261,27 @@ async fn run() {
     let excluded=sync(&service,json!({"conn_id":"no-list","lists":{"all":{"ranges":[[0,0]],"timeline_limit":0}},"extensions":{EXT:{"enabled":true,"lists":[],"rooms":[]}}}),None).await;
     assert!(ids(&excluded, &room).is_empty());
 
+    // A list can grow without changing request configuration. Retrying an
+    // outstanding page must not get stuck behind an offer for the old scope.
+    let mut growing = json!({"conn_id":"growing","lists":{"all":{"ranges":[[0,1]],"timeline_limit":0}},
+        "extensions":{EXT:{"enabled":true,"lists":[],"rooms":[]}}});
+    let growing_base = sync(&service, growing.clone(), None).await;
+    growing["extensions"][EXT]["lists"] = json!(["all"]);
+    let growing_page = sync(&service, growing.clone(), growing_base["pos"].as_str()).await;
+    assert_eq!(
+        ids(&growing_page, &room),
+        vec![first.clone(), fourth.clone()]
+    );
+    ok(
+        &service,
+        TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+            .json(&json!({"room_version":"11","preset":"public_chat"})),
+        "alice",
+    )
+    .await;
+    let grown = sync(&service, growing, growing_base["pos"].as_str()).await;
+    assert_eq!(ids(&grown, &room), vec![first.clone(), fourth.clone()]);
+
     // Leaving revokes queued delivery; joining again resets even an acknowledged queue.
     ok(
         &service,

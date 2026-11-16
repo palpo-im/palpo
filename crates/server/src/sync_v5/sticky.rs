@@ -199,10 +199,11 @@ pub(super) async fn collect(
             .rooms
             .retain(|id, progress| joins.get(id) == Some(&progress.join));
         state.offers.retain(|_, offer| {
-            offer
-                .progress
-                .iter()
-                .all(|(id, p)| joins.get(id) == Some(&p.join))
+            offer.progress.len() == joins.len()
+                && offer
+                    .progress
+                    .iter()
+                    .all(|(id, p)| joins.get(id) == Some(&p.join))
         });
         state.clone()
     })
