@@ -111,6 +111,9 @@ pub struct DbRoomAlias {
     pub room_id: OwnedRoomId,
     pub created_by: OwnedUserId,
     pub created_at: UnixMillis,
+    /// Database-assigned revision. Inserts and updates never accept caller values.
+    #[diesel(skip_insertion)]
+    pub generation: i64,
 }
 
 #[derive(Identifiable, Queryable, Debug, Clone)]
@@ -541,22 +544,65 @@ pub async fn alias_exists_for_other_room(
     Ok(diesel_exists!(query, &mut crate::db())?)
 }
 
-/// Insert an alias, ignoring conflicts with an existing one.
-pub async fn set_alias(alias: DbRoomAlias) -> DataResult<()> {
-    diesel::insert_into(room_aliases::table)
+/// Claim a previously unused alias. False means another mapping already owns it.
+pub async fn set_alias(alias: DbRoomAlias) -> DataResult<bool> {
+    Ok(diesel::insert_into(room_aliases::table)
         .values(alias)
         .on_conflict_do_nothing()
         .execute(&mut crate::db())
-        .await?;
-    Ok(())
+        .await?
+        == 1)
 }
 
-/// Remove a local alias.
-pub async fn remove_alias(alias_id: &RoomAliasId) -> DataResult<()> {
-    diesel::delete(room_aliases::table.filter(room_aliases::alias_id.eq(alias_id)))
-        .execute(&mut crate::db())
-        .await?;
-    Ok(())
+/// Replace only the exact mapping the caller observed and authorized.
+/// Normal directory creation must use set_alias, not this explicit move/force API.
+pub async fn replace_alias(expected: &DbRoomAlias, replacement: &DbRoomAlias) -> DataResult<bool> {
+    if expected.alias_id != replacement.alias_id {
+        return Err(crate::DataError::public(
+            "Alias identifier cannot change during replacement",
+        ));
+    }
+    Ok(diesel::update(
+        room_aliases::table
+            .filter(room_aliases::alias_id.eq(&expected.alias_id))
+            .filter(room_aliases::room_id.eq(&expected.room_id))
+            .filter(room_aliases::created_by.eq(&expected.created_by))
+            .filter(room_aliases::created_at.eq(expected.created_at))
+            .filter(room_aliases::generation.eq(expected.generation)),
+    )
+    .set((
+        room_aliases::room_id.eq(&replacement.room_id),
+        room_aliases::created_by.eq(&replacement.created_by),
+        room_aliases::created_at.eq(replacement.created_at),
+    ))
+    .execute(&mut crate::db())
+    .await?
+        == 1)
+}
+
+/// Delete only the exact mapping the caller observed and authorized.
+/// A recreated or moved alias must not be deleted using an earlier owner's rights.
+pub async fn remove_alias(expected: &DbRoomAlias) -> DataResult<bool> {
+    Ok(diesel::delete(
+        room_aliases::table
+            .filter(room_aliases::alias_id.eq(&expected.alias_id))
+            .filter(room_aliases::room_id.eq(&expected.room_id))
+            .filter(room_aliases::created_by.eq(&expected.created_by))
+            .filter(room_aliases::created_at.eq(expected.created_at))
+            .filter(room_aliases::generation.eq(expected.generation)),
+    )
+    .execute(&mut crate::db())
+    .await?
+        == 1)
+}
+
+/// Snapshot local mappings before a room-wide operation starts remote effects.
+pub async fn alias_snapshots_for_room(room_id: &RoomId) -> DataResult<Vec<DbRoomAlias>> {
+    room_aliases::table
+        .filter(room_aliases::room_id.eq(room_id))
+        .load(&mut crate::db())
+        .await
+        .map_err(Into::into)
 }
 
 /// List thread roots as `(event_id, last_sn)`, newest activity first. The cursor

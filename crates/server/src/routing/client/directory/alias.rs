@@ -47,14 +47,12 @@ pub(super) async fn upsert_alias(
         return Err(MatrixError::invalid_param("alias is from another server").into());
     }
 
-    if crate::room::resolve_local_alias(&alias_id).await.is_ok() {
-        return Err(MatrixError::forbidden("alias already exists", None).into());
-    }
+    crate::room::alias::check_client_alias_namespace(&alias_id, authed.appservice()).await?;
 
-    if data::room::alias_exists_for_other_room(&alias_id, &body.room_id).await? {
-        return Err(StatusError::conflict()
-            .brief("a room alias with that name already exists")
-            .into());
+    if data::room::get_alias(&alias_id).await?.is_some() {
+        return Err(crate::room::alias::alias_conflict(
+            "Room alias already exists",
+        ));
     }
 
     crate::room::alias::ensure_can_claim_alias(&alias_id, authed.user_id()).await?;
@@ -92,7 +90,7 @@ pub(super) async fn delete_alias(
         return Err(MatrixError::invalid_param("Alias is from another server.").into());
     }
 
-    crate::room::remove_alias(&alias, authed.user()).await?;
+    crate::room::alias::remove_alias_as_client(&alias, authed.user(), authed.appservice()).await?;
 
     // TODO: update alt_aliases?
 

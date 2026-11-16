@@ -66,8 +66,12 @@ pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) ->
                 RoomAliasCommand::Set { force, room_id, .. } => {
                     match (force, crate::room::resolve_local_alias(&room_alias).await) {
                         (true, Ok(id)) => {
-                            match crate::room::set_alias(&room_id, &room_alias, &server_user.id)
-                                .await
+                            match crate::room::alias::force_set_alias(
+                                &room_id,
+                                &room_alias,
+                                &server_user,
+                            )
+                            .await
                             {
                                 Err(err) => {
                                     Err(AppError::public(format!("Failed to remove alias: {err}")))
