@@ -144,37 +144,38 @@ pub async fn highlight_count(user_id: &UserId, room_id: &RoomId) -> AppResult<u6
 }
 
 pub async fn last_read_notification(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
-    let sn = event_receipts::table
-        .filter(event_receipts::user_id.eq(user_id))
-        .filter(event_receipts::room_id.eq(room_id))
-        .select(diesel::dsl::max(event_receipts::sn))
-        .first::<Option<Seqnum>>(&mut crate::data::db())
-        .await?;
-    Ok(sn.unwrap_or_default())
+    let cursors = last_read_notifications(user_id, &[room_id.to_owned()]).await?;
+    Ok(cursors.get(room_id).copied().unwrap_or_default())
 }
 
-/// The same per-room MAX used by `last_read_notification`, in bounded batches.
+// The transactional projection has one row per user/room. Neither aggregates
+// nor planner-dependent top-one probes should scan the append-only history.
+pub(crate) const NOTIFICATION_CURSOR_QUERY: &str = "\
+    SELECT room_id, sn FROM event_receipts_notification_cursors \
+    WHERE user_id = $1 AND room_id = ANY($2::text[])";
+
+/// The latest receipt publication per room, using the transactional projection.
 /// Missing receipts mean zero; query failures must not advance a sync cursor.
 pub(crate) async fn last_read_notifications(
     user_id: &UserId,
     rooms: &[OwnedRoomId],
 ) -> AppResult<HashMap<OwnedRoomId, Seqnum>> {
+    use diesel::sql_types::{Array, BigInt, Text};
+    #[derive(diesel::QueryableByName)]
+    struct Cursor {
+        #[diesel(sql_type = Text)]
+        room_id: OwnedRoomId,
+        #[diesel(sql_type = BigInt)]
+        sn: Seqnum,
+    }
     let mut result = HashMap::new();
     for chunk in rooms.chunks(256) {
-        let rows = event_receipts::table
-            .filter(event_receipts::user_id.eq(user_id))
-            .filter(event_receipts::room_id.eq_any(chunk))
-            .group_by(event_receipts::room_id)
-            .select((
-                event_receipts::room_id,
-                diesel::dsl::max(event_receipts::sn),
-            ))
-            .load::<(OwnedRoomId, Option<Seqnum>)>(&mut crate::data::db())
+        let rows = diesel::sql_query(NOTIFICATION_CURSOR_QUERY)
+            .bind::<Text, _>(user_id.as_str())
+            .bind::<Array<Text>, _>(chunk.iter().map(|room| room.as_str()).collect::<Vec<_>>())
+            .load::<Cursor>(&mut crate::data::db())
             .await?;
-        result.extend(
-            rows.into_iter()
-                .map(|(room, sn)| (room, sn.unwrap_or_default())),
-        );
+        result.extend(rows.into_iter().map(|cursor| (cursor.room_id, cursor.sn)));
     }
     Ok(result)
 }

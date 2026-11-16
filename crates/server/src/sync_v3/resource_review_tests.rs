@@ -766,6 +766,7 @@ async fn filtered_inert_rooms() {
         Some(0)
     );
 
+    seed_receipt_history(&sender, &room, message["event_id"].as_str().unwrap()).await;
     let expected = room::user::last_read_notification(&sender, &room)
         .await
         .unwrap();
@@ -798,7 +799,7 @@ async fn filtered_inert_rooms() {
         cursors[&room], expected,
         "another user's later receipt must not change this cursor"
     );
-    assert!(cursors.get(&rooms[1]).is_none());
+    assert!(!cursors.contains_key(&rooms[1]));
     assert!(
         spy.snapshot()
             .iter()
@@ -809,15 +810,20 @@ async fn filtered_inert_rooms() {
     );
     spy.assert_coverage().await;
     spy.uninstall().await;
-    diesel::sql_query("ALTER TABLE event_receipts RENAME TO review_receipts_unavailable")
-        .execute(&mut data::db())
-        .await
-        .unwrap();
+    assert_receipt_probe_plan(&sender, &rooms).await;
+    diesel::sql_query(
+        "ALTER TABLE event_receipts_notification_cursors RENAME TO review_receipts_unavailable",
+    )
+    .execute(&mut data::db())
+    .await
+    .unwrap();
     let failed = room::user::last_read_notifications(&sender, &rooms).await;
-    diesel::sql_query("ALTER TABLE review_receipts_unavailable RENAME TO event_receipts")
-        .execute(&mut data::db())
-        .await
-        .unwrap();
+    diesel::sql_query(
+        "ALTER TABLE review_receipts_unavailable RENAME TO event_receipts_notification_cursors",
+    )
+    .execute(&mut data::db())
+    .await
+    .unwrap();
     assert!(
         failed.is_err(),
         "failed cursor batches must not acknowledge unread work"
@@ -851,6 +857,75 @@ async fn filtered_inert_rooms() {
     );
 
     receipt_publication_fence(&sender, &room, message["event_id"].as_str().unwrap()).await;
+}
+
+async fn seed_receipt_history(user: &UserId, room: &RoomId, event: &str) {
+    use diesel::sql_types::{BigInt, Text};
+    use horme::RunQueryDsl;
+    let event = EventId::parse(event).unwrap();
+    let event_sn = crate::event::get_event_sn(&event).await.unwrap();
+    diesel::sql_query("INSERT INTO event_receipts (sn, ty, room_id, user_id, event_id, event_sn, thread_id, json_data, receipt_at) SELECT nextval('occur_sn_seq'), 'm.read.private', $2, $1, $3, $4, NULL, '{}'::jsonb, 0 FROM generate_series(1, 30000)")
+        .bind::<Text,_>(user.as_str()).bind::<Text,_>(room.as_str())
+        .bind::<Text,_>(event.as_str()).bind::<BigInt,_>(event_sn)
+        .execute(&mut data::db()).await.unwrap();
+    diesel::sql_query("ANALYZE event_receipts")
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    let mut row = data::room::receipt::last_private_read_receipt(user, room)
+        .await
+        .unwrap()
+        .unwrap();
+    let older = data::next_sn().await.unwrap();
+    let newer = data::next_sn().await.unwrap();
+    for sn in [newer, older] {
+        row.sn = sn;
+        diesel::insert_into(event_receipts::table)
+            .values(&row)
+            .execute(&mut data::db())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        room::user::last_read_notification(user, room)
+            .await
+            .unwrap(),
+        newer
+    );
+}
+
+async fn assert_receipt_probe_plan(user: &UserId, rooms: &[OwnedRoomId]) {
+    use diesel::sql_types::{Array, Json, Text};
+    use horme::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Plan {
+        #[diesel(sql_type = Json, column_name = "QUERY PLAN")]
+        value: Value,
+    }
+    let explain = diesel::sql_query(format!(
+        "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {}",
+        room::user::NOTIFICATION_CURSOR_QUERY
+    ))
+    .bind::<Text, _>(user.as_str())
+    .bind::<Array<Text>, _>(rooms.iter().map(|room| room.as_str()).collect::<Vec<_>>())
+    .get_result::<Plan>(&mut data::db())
+    .await
+    .unwrap();
+    fn probe(node: &Value) -> Option<&Value> {
+        assert_ne!(
+            node["Relation Name"], "event_receipts",
+            "sync scanned the receipt history"
+        );
+        if node["Relation Name"] == "event_receipts_notification_cursors" {
+            return Some(node);
+        }
+        node.get("Plans")?.as_array()?.iter().find_map(probe)
+    }
+    let index = probe(&explain.value[0]["Plan"]).expect("sync must read the watermark projection");
+    assert!(
+        index["Actual Rows"].as_f64().unwrap() <= rooms.len() as f64,
+        "{index}"
+    );
 }
 
 async fn receipt_publication_fence(user: &UserId, room: &RoomId, event: &str) {

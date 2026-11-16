@@ -4,7 +4,12 @@ Incremental v3 sync captures current and previous room frames in batches. When
 all four room sections exclude every event type, an unchanged frame needs no
 per-room loader if there is no fresh receipt/notification update or deliverable
 sticky event. Receipt watermarks and sticky candidate rooms are read in batches
-of at most 256 room IDs. Room-ID exclusions can also skip an unchanged frame.
+of at most 256 room IDs. A transactional projection stores one receipt watermark
+per user/room; sync never aggregates the append-only history. The migration
+installs its insert trigger before backfilling existing rows, and `GREATEST`
+keeps concurrent or out-of-order positions monotonic. The backfill runs outside
+the trigger-installation transaction so it does not hold that writer lock.
+Room-ID exclusions can also skip an unchanged frame.
 Changed membership frames still feed independent device and presence streams.
 Initial sync, `full_state`, peeks and requested thread-notification maps keep
 their existing paths.
@@ -20,6 +25,8 @@ one commit point. No federation request runs while holding this transaction.
 The isolated regression exercises the loader bypass, unchanged/changed frames,
 full-state fallback, sticky delivery, current and older-event receipts, another
 user's receipt, bounded queries for over 1,000 IDs and database-error recovery.
+With 30,000 historical receipts, the actual query plan reads only the small
+projection. Out-of-order inserts cannot regress its watermark.
 An actual PostgreSQL lock waiter proves that snapshots wait for both committed
 and rolled-back publications.
 
