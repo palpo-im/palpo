@@ -488,7 +488,7 @@ async fn notification_queries() {
         &service,
     )
     .await;
-    let root = root["event_id"].as_str().unwrap();
+    let root: OwnedEventId = root["event_id"].as_str().unwrap().try_into().unwrap();
     let initial = sync_events(
         &sender,
         "D".into(),
@@ -503,7 +503,7 @@ async fn notification_queries() {
             .is_some()
     );
     let since = initial.next_batch;
-    seed_notification_summaries(&sender, &room, root).await;
+    seed_notification_summaries(&sender, &room, root.as_str()).await;
     // Force a non-idle server window without activity in the joined room.
     data::next_sn().await.unwrap();
     let filter = json!({"room":{
@@ -531,11 +531,11 @@ async fn notification_queries() {
         .unwrap();
     let body = &threads.rooms.join[&room];
     assert_eq!(
-        body.unread_thread_notifications[root].notification_count,
+        body.unread_thread_notifications[&root].notification_count,
         Some(2)
     );
     assert_eq!(
-        body.unread_thread_notifications[root].highlight_count,
+        body.unread_thread_notifications[&root].highlight_count,
         Some(1)
     );
     assert!(body.unread_notifications.notification_count.is_none());
@@ -547,6 +547,7 @@ async fn notification_queries() {
             .count(),
         1
     );
+    spy.assert_coverage().await;
     spy.uninstall().await;
 
     request(
@@ -558,7 +559,7 @@ async fn notification_queries() {
         &service,
     )
     .await;
-    seed_notification_summaries(&sender, &room, root).await;
+    seed_notification_summaries(&sender, &room, root.as_str()).await;
     let visible_args: SyncEventsReqArgs = serde_json::from_value(json!({"since":since})).unwrap();
     let visible = sync_events(&sender, "D".into(), &visible_args)
         .await
