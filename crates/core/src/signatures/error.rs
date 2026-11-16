@@ -45,7 +45,7 @@ pub enum Error {
     UnsupportedAlgorithm(String),
 
     /// PDU was too large
-    #[error("pdu is larger than maximum of 65535 bytes")]
+    #[error("pdu is larger than maximum of 65536 bytes")]
     PduSize,
 }
 

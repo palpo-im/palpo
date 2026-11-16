@@ -148,6 +148,25 @@ fn includes_room_section_event(
         })
 }
 
+fn parse_sync_position(input: &str) -> AppResult<BatchToken> {
+    // History cursors have different bounds, and their signed ordering must
+    // never reach event_sn(), which takes an absolute value for history reads.
+    match input.parse::<BatchToken>()? {
+        BatchToken::Live { stream_ordering } | BatchToken::Publication { stream_ordering }
+            if stream_ordering >= 0 =>
+        {
+            Ok(BatchToken::new_publication(stream_ordering))
+        }
+        _ => Err(MatrixError::invalid_param("not a nonnegative sync position").into()),
+    }
+}
+
+fn sync_window_end(curr_sn: Seqnum) -> AppResult<Seqnum> {
+    curr_sn
+        .checked_add(1)
+        .ok_or_else(|| AppError::internal("Sync stream position is exhausted"))
+}
+
 #[tracing::instrument(skip_all)]
 pub async fn sync_events(
     sender_id: &UserId,
@@ -157,25 +176,13 @@ pub async fn sync_events(
     crate::user::get_push_rules(sender_id).await?;
     let curr_sn = crate::event::sticky::curr_sn_after_sync_writes(sender_id, device_id).await?;
     crate::seqnum_reach(curr_sn).await;
+    let max_since_sn = sync_window_end(curr_sn)?;
     let since_tk = if let Some(since_str) = args.since.as_ref() {
-        let since_tk: BatchToken = since_str.parse()?;
-        if since_tk.is_publication_page() {
-            return Err(
-                MatrixError::invalid_param("message page cursor is not a sync position").into(),
-            );
-        }
-        let since_tk = match since_tk {
-            BatchToken::Live { stream_ordering } => BatchToken::new_publication(stream_ordering),
-            other => other,
-        };
+        let since_tk = parse_sync_position(since_str)?;
         // An issued next token is C + 1 even while the event stream is idle.
-        // MSC4494 must still check current eligibility and delayed admissions,
-        // which can change without allocating another event position.
-        #[cfg(feature = "unstable-msc4494")]
-        let max_since_sn = curr_sn + 1;
-        #[cfg(not(feature = "unstable-msc4494"))]
-        let max_since_sn = curr_sn;
-        if since_tk.stream_ordering() > max_since_sn && !args.full_state {
+        // Accept its ACK with every feature set. A cursor beyond that bound
+        // cannot acknowledge unseen events, including during a full-state sync.
+        if since_tk.stream_ordering() > max_since_sn {
             let mut response = SyncEventsResBody::new(since_str.to_owned());
             // Key uploads and claims need not allocate a stream position. Even
             // an idle incremental sync must report their current usage state.
@@ -189,6 +196,18 @@ pub async fn sync_events(
     } else {
         None
     };
+    // Snapshot fencing above ensures all earlier inbox allocations have committed.
+    // Limit the entire response window, not just the returned vector: a high-water
+    // token past omitted messages would delete them on the next sync ACK.
+    let curr_sn = data::user::device::sync_to_device_until(
+        sender_id,
+        device_id,
+        since_tk.unwrap_or(BatchToken::LIVE_MIN).event_sn(),
+        curr_sn,
+        100,
+        512 * 1024,
+    )
+    .await?;
     let invite_batch = args
         .since
         .as_deref()
@@ -206,7 +225,7 @@ pub async fn sync_events(
     )
     .await?;
     let curr_sn = invite_snapshot.until_sn;
-    let next_batch = BatchToken::new_publication(curr_sn + 1);
+    let next_batch = BatchToken::new_publication(sync_window_end(curr_sn)?);
 
     // Load filter
     let filter = match &args.filter {
@@ -2059,3 +2078,6 @@ mod protocol_contract_tests;
 
 #[cfg(test)]
 mod account_data_publication_tests;
+
+#[cfg(test)]
+mod to_device_batch_tests;

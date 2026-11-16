@@ -64,6 +64,7 @@ pub fn router() -> Router {
                 .hoop(crate::hoops::auth_by_admin_access_token)
                 .hoop(require_admin)
                 .get(home)
+                .push(Router::with_path("v1/capabilities").get(capabilities))
                 .push(appservice::router())
                 .push(debug::router())
                 .push(event::router())
@@ -96,6 +97,16 @@ pub fn router() -> Router {
 #[handler]
 async fn home() -> &'static str {
     "Palpo Admin API"
+}
+
+/// Vendor admin capabilities are independent of the standard Client-Server versions.
+#[endpoint]
+async fn capabilities() -> JsonResult<serde_json::Value> {
+    json_ok(serde_json::json!({"capabilities": {
+        "room_aliases": true, "alias_delete_preserves_state": true, "room_members_pagination": true, "make_room_admin": true, "report_event_details": true,
+        "user_suspended": true, "destination_search": true, "media_keep_profiles": true,
+        "bulk_device_deletion": true, "appservice_url_cas": true
+    }}))
 }
 
 #[cfg(test)]

@@ -617,6 +617,61 @@ pub async fn delete_refresh_tokens(user_id: &UserId, device_id: &DeviceId) -> Da
     Ok(())
 }
 
+/// Bound the shared sync window at the last message actually included in this batch.
+/// Every stream in the response must use this boundary, so echoing next_batch cannot
+/// acknowledge or skip an inbox message omitted by the count limit.
+pub async fn sync_to_device_until(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    since_sn: Seqnum,
+    until_sn: Seqnum,
+    limit: usize,
+    max_bytes: usize,
+) -> DataResult<Seqnum> {
+    if limit == 0 {
+        return Err(DataError::public("to-device batch limit must be positive"));
+    }
+    #[derive(diesel::QueryableByName)]
+    struct Boundary {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        until_sn: Seqnum,
+    }
+    // Compute the prefix in PostgreSQL without loading limit + 1 complete JSON
+    // payloads into the process. A backlog of large messages must not amplify a
+    // small response into hundreds of MiB of intermediate allocations. Stored JSON's
+    // text encoding can retain spaces, so its UTF-8 byte length budgets the
+    // compact JSON written by our inbox producers conservatively. Only the first over-budget
+    // event is exempt, to guarantee progress.
+    let boundary = diesel::sql_query(
+        "WITH RECURSIVE batch(n,last_sn,bytes) AS (
+            SELECT 0::bigint,$4::bigint,2::bigint
+            UNION ALL
+            SELECT b.n+1,i.occur_sn,b.bytes+octet_length(i.json_data::text)::bigint+CASE WHEN b.n>0 THEN 1 ELSE 0 END
+            FROM batch b CROSS JOIN LATERAL (
+                SELECT d.occur_sn,d.json_data
+                FROM device_inboxes d
+                WHERE d.user_id=$1 AND d.device_id=$2 AND d.occur_sn>=$3 AND d.occur_sn<=$4
+                    AND (b.n=0 OR d.occur_sn>b.last_sn)
+                ORDER BY d.occur_sn LIMIT 1
+            ) i
+            WHERE b.n<$5 AND (b.n=0 OR b.bytes+octet_length(i.json_data::text)::bigint+1<=$6)
+        ), last AS (SELECT * FROM batch ORDER BY n DESC LIMIT 1)
+        SELECT CASE WHEN last.n>0 AND EXISTS (
+            SELECT 1 FROM device_inboxes d WHERE d.user_id=$1 AND d.device_id=$2
+                AND d.occur_sn>last.last_sn AND d.occur_sn<=$4
+        ) THEN last.last_sn ELSE $4 END AS until_sn FROM last",
+    )
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(device_id.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(since_sn)
+    .bind::<diesel::sql_types::BigInt, _>(until_sn)
+    .bind::<diesel::sql_types::BigInt, _>(i64::try_from(limit).unwrap_or(i64::MAX))
+    .bind::<diesel::sql_types::BigInt, _>(i64::try_from(max_bytes).unwrap_or(i64::MAX))
+    .get_result::<Boundary>(&mut crate::db())
+    .await?;
+    Ok(boundary.until_sn)
+}
+
 pub async fn get_to_device_events(
     user_id: &UserId,
     device_id: &DeviceId,

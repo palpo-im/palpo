@@ -210,6 +210,7 @@ jobs:
             concurrency_review_tests::review_receipt_latest_projection_retains_log_and_threads
             watcher::review_tests::review_watch_receipts_presence_and_pre_response_baseline
             routing::admin::contract_tests::review_admin_operations_report_committed_results_and_failures
+            sync_v3::to_device_batch_tests::to_device_batches_retry_and_ack_without_skipping_backlog
             routing::client::room::state::state_snapshot_tests::review_state_gets_share_departure_snapshot_and_rejoin_boundary
             routing::client::media::upload_tests::http_reserved_media_enforces_owner_and_safe_download_headers
             media::upload::tests::review_reserved_upload_serializes_and_recovers_storage_and_db_failures

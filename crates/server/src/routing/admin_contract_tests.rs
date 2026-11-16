@@ -235,4 +235,411 @@ async fn contracts() {
     .await;
     assert_eq!(response["kicked_users"], json!([owner.as_str()]));
     assert!(!crate::room::user::is_joined(&owner, &second).await.unwrap());
+    audit_contract_extensions(&service, &owner).await;
+}
+
+async fn audit_contract_extensions(service: &Service, owner: &crate::core::UserId) {
+    fn segment(value: &str) -> String {
+        url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+    }
+    let caps = ok(
+        admin(TestClient::get(
+            "http://localhost/_palpo/admin/v1/capabilities",
+        )),
+        service,
+    )
+    .await;
+    for name in [
+        "room_aliases",
+        "room_members_pagination",
+        "alias_delete_preserves_state",
+        "make_room_admin",
+        "report_event_details",
+        "user_suspended",
+        "destination_search",
+        "media_keep_profiles",
+    ] {
+        assert_eq!(caps["capabilities"][name], true, "{name}");
+    }
+    let member = UserId::parse("@member:admin-contract.example").unwrap();
+    data::user::create_user(&data::user::NewDbUser {
+        id: member.clone(),
+        ty: None,
+        is_admin: false,
+        is_guest: false,
+        is_local: true,
+        localpart: "member".into(),
+        server_name: member.server_name().to_owned(),
+        appservice_id: None,
+        created_at: UnixMillis::now(),
+    })
+    .await
+    .unwrap();
+    data::user::ensure_profile_exists(&member).await.unwrap();
+    data::user::device::create_device(
+        &member,
+        &OwnedDeviceId::from("D"),
+        "member-token",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let (status, _) = send(
+        TestClient::get("http://localhost/_palpo/admin/v1/capabilities").add_header(
+            "Authorization",
+            "Bearer member-token",
+            true,
+        ),
+        service,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let created = ok(
+        admin(TestClient::post(
+            "http://localhost/_matrix/client/v3/createRoom",
+        ))
+        .json(&json!({"room_version":"11","preset":"public_chat","room_alias_name":"main-audit"})),
+        service,
+    )
+    .await;
+    let room = RoomId::parse(created["room_id"].as_str().unwrap()).unwrap();
+    let rid = segment(room.as_str());
+    ok(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{rid}/join"
+        ))
+        .add_header("Authorization", "Bearer member-token", true)
+        .json(&json!({})),
+        service,
+    )
+    .await;
+    for alias in ["#a:admin-contract.example", "#b:admin-contract.example"] {
+        ok(
+            admin(TestClient::put(format!(
+                "http://localhost/_matrix/client/v3/directory/room/{}",
+                segment(alias)
+            )))
+            .json(&json!({"room_id":room})),
+            service,
+        )
+        .await;
+    }
+    let aliases = ok(
+        admin(TestClient::get(format!(
+            "http://localhost/_palpo/admin/v1/rooms/{rid}/aliases"
+        ))),
+        service,
+    )
+    .await;
+    assert_eq!(aliases["aliases"].as_array().unwrap().len(), 3);
+    let canonical_url =
+        format!("http://localhost/_matrix/client/v3/rooms/{rid}/state/m.room.canonical_alias");
+    ok(admin(TestClient::put(&canonical_url)).json(&json!({"alias":"#main-audit:admin-contract.example","alt_aliases":["#a:admin-contract.example","#b:admin-contract.example"],"org.example.custom":true})),service).await;
+    ok(
+        admin(TestClient::delete(format!(
+            "http://localhost/_matrix/client/v3/directory/room/{}",
+            segment("#a:admin-contract.example")
+        ))),
+        service,
+    )
+    .await;
+    let canonical = ok(admin(TestClient::get(&canonical_url)), service).await;
+    assert_eq!(canonical["alias"], "#main-audit:admin-contract.example");
+    assert_eq!(
+        canonical["alt_aliases"],
+        json!(["#b:admin-contract.example"])
+    );
+    assert_eq!(canonical["org.example.custom"], true);
+    let first = ok(
+        admin(TestClient::get(format!(
+            "http://localhost/_palpo/admin/v1/rooms/{rid}/members?from=0&limit=1"
+        ))),
+        service,
+    )
+    .await;
+    let second = ok(
+        admin(TestClient::get(format!(
+            "http://localhost/_palpo/admin/v1/rooms/{rid}/members?from=1&limit=1"
+        ))),
+        service,
+    )
+    .await;
+    assert_eq!(first["total"], 2);
+    assert_eq!(first["members"].as_array().unwrap().len(), 1);
+    assert_ne!(first["members"], second["members"]);
+    ok(
+        admin(TestClient::post(format!(
+            "http://localhost/_palpo/admin/v1/rooms/{rid}/make_room_admin"
+        )))
+        .json(&json!({"user_id":member})),
+        service,
+    )
+    .await;
+    let powers = ok(
+        admin(TestClient::get(format!(
+            "http://localhost/_matrix/client/v3/rooms/{rid}/state/m.room.power_levels"
+        ))),
+        service,
+    )
+    .await;
+    assert_eq!(powers["users"][member.as_str()], 100);
+    let sent = ok(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{rid}/send/m.room.message/reported"
+        ))
+        .add_header("Authorization", "Bearer member-token", true)
+        .json(&json!({"msgtype":"m.text","body":"actual reported event"})),
+        service,
+    )
+    .await;
+    let report = data::room::create_event_report(data::room::NewDbEventReport::new(
+        room.clone(),
+        crate::core::EventId::parse(sent["event_id"].as_str().unwrap()).unwrap(),
+        owner.to_owned(),
+        Some("reason".into()),
+        Some(json!({"reason":"reason","sender":"@spoof:example"})),
+        Some(-10),
+    ))
+    .await
+    .unwrap();
+    for request in [
+        admin(TestClient::get(format!(
+            "http://localhost/_palpo/admin/v1/event_reports/{report}"
+        ))),
+        admin(TestClient::put(format!(
+            "http://localhost/_palpo/admin/v1/event_reports/{report}"
+        )))
+        .json(&json!({"status":"resolved"})),
+    ] {
+        let detail = ok(request, service).await;
+        assert_eq!(detail["sender"], member.as_str());
+        assert_eq!(detail["user_id"], owner.as_str());
+        assert_eq!(
+            detail["event_json"]["content"]["body"],
+            "actual reported event"
+        );
+    }
+    // A signature added after initial hash/sign must be counted before persistence.
+    let (pdu, mut signed) = crate::event::PduBuilder {
+        content: serde_json::value::to_raw_value(
+            &json!({"msgtype":"m.text","body":"a".repeat(63_000)}),
+        )
+        .unwrap(),
+        ..Default::default()
+    }
+    .hash_sign(owner, &room, &crate::core::RoomVersionId::V11)
+    .await
+    .unwrap();
+    let extra = (0..40)
+        .map(|n| {
+            (
+                format!("ed25519:k{n}"),
+                crate::core::serde::CanonicalJsonValue::String("A".repeat(86)),
+            )
+        })
+        .collect();
+    signed
+        .get_mut("signatures")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "extra.example".into(),
+            crate::core::serde::CanonicalJsonValue::Object(extra),
+        );
+    let id = pdu.event_id.clone();
+    assert!(
+        crate::event::PduBuilder::save_as_outlier(pdu, signed, owner)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        events::table
+            .filter(events::id.eq(id))
+            .count()
+            .get_result::<i64>(&mut data::db())
+            .await
+            .unwrap(),
+        0
+    );
+    for suspended in [true, false] {
+        ok(
+            admin(TestClient::put(format!(
+                "http://localhost/_palpo/admin/v1/suspend/{}",
+                segment(member.as_str())
+            )))
+            .json(&json!({"suspend":suspended})),
+            service,
+        )
+        .await;
+        let user = ok(
+            admin(TestClient::get(format!(
+                "http://localhost/_palpo/admin/v2/users/{}",
+                segment(member.as_str())
+            ))),
+            service,
+        )
+        .await;
+        assert_eq!(user["suspended"], suspended);
+    }
+    let rows: Vec<_> = (0..27)
+        .map(|n| data::sending::NewDbOutgoingRequest {
+            kind: "normal".into(),
+            appservice_id: None,
+            user_id: None,
+            pushkey: None,
+            server_id: Some(
+                crate::core::ServerName::parse(format!("destination-{n:02}.example")).unwrap(),
+            ),
+            pdu_id: None,
+            edu_json: Some(b"{}".to_vec()),
+        })
+        .collect();
+    diesel::insert_into(outgoing_requests::table)
+        .values(rows)
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    let page=ok(admin(TestClient::get("http://localhost/_palpo/admin/v1/federation/destinations?destination=26&order_by=destination&dir=b&from=0&limit=1")),service).await;
+    assert_eq!(page["total"], 1);
+    assert_eq!(
+        page["destinations"][0]["destination"],
+        "destination-26.example"
+    );
+    let page=ok(admin(TestClient::get("http://localhost/_palpo/admin/v1/federation/destinations?order_by=destination&dir=b&from=0&limit=1")),service).await;
+    assert_eq!(page["total"], 27);
+    assert_eq!(
+        page["destinations"][0]["destination"],
+        "destination-26.example"
+    );
+    // Storage is isolated and contains no user files; missing object deletion is idempotent.
+    let storage = tempfile::tempdir().unwrap();
+    crate::storage::init(&crate::config::StorageConfig::Fs {
+        root: storage.path().to_str().unwrap().to_owned(),
+    })
+    .unwrap();
+    let avatar = crate::core::OwnedMxcUri::from("mxc://admin-contract.example/profile");
+    data::user::set_avatar_url(owner, &avatar).await.unwrap();
+    ok(
+        admin(TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{rid}/state/m.room.avatar"
+        )))
+        .json(&json!({"url":"mxc://admin-contract.example/room-avatar"})),
+        service,
+    )
+    .await;
+    for id in ["profile", "room-avatar", "unused"] {
+        data::media::insert_metadata(&data::media::NewDbMetadata {
+            media_id: id.into(),
+            origin_server: owner.server_name().to_owned(),
+            content_type: Some("image/png".into()),
+            disposition_type: None,
+            file_name: None,
+            file_extension: None,
+            file_size: 100,
+            file_hash: None,
+            created_by: Some(owner.to_owned()),
+            created_at: UnixMillis(1),
+        })
+        .await
+        .unwrap();
+    }
+    let deletion=ok(admin(TestClient::post("http://localhost/_palpo/admin/v1/media/delete?before_ts=1800000000000&size_gt=0&keep_profiles=true")),service).await;
+    assert_eq!(deletion["deleted_media"], json!(["unused"]));
+    assert!(
+        data::media::get_metadata(owner.server_name(), "profile")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        data::media::get_metadata(owner.server_name(), "room-avatar")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let deletion=ok(admin(TestClient::post("http://localhost/_palpo/admin/v1/media/delete?before_ts=1800000000000&size_gt=0&keep_profiles=false")),service).await;
+    assert_eq!(deletion["total"], 2);
+
+    // Alias ownership survives leaving a room, even if the creator retains a
+    // power-level entry that would otherwise permit updating canonical aliases.
+    let departed_aliases = [
+        "#departed-main:admin-contract.example",
+        "#departed-alt:admin-contract.example",
+    ];
+    for alias in departed_aliases {
+        ok(
+            TestClient::put(format!(
+                "http://localhost/_matrix/client/v3/directory/room/{}",
+                segment(alias)
+            ))
+            .add_header("Authorization", "Bearer member-token", true)
+            .json(&json!({"room_id":room})),
+            service,
+        )
+        .await;
+    }
+    let canonical_before = json!({
+        "alias":departed_aliases[0],
+        "alt_aliases":["#b:admin-contract.example",departed_aliases[1]],
+        "org.example.custom":true
+    });
+    let canonical_event = ok(
+        admin(TestClient::put(&canonical_url)).json(&canonical_before),
+        service,
+    )
+    .await;
+    ok(
+        TestClient::post(format!(
+            "http://localhost/_matrix/client/v3/rooms/{rid}/leave"
+        ))
+        .add_header("Authorization", "Bearer member-token", true)
+        .json(&json!({})),
+        service,
+    )
+    .await;
+    assert!(!crate::room::user::is_joined(&member, &room).await.unwrap());
+    assert!(
+        crate::room::get_power_levels(&room)
+            .await
+            .unwrap()
+            .user_can_send_state(
+                &member,
+                crate::core::events::StateEventType::RoomCanonicalAlias
+            )
+    );
+    for alias in departed_aliases {
+        ok(
+            TestClient::delete(format!(
+                "http://localhost/_matrix/client/v3/directory/room/{}",
+                segment(alias)
+            ))
+            .add_header("Authorization", "Bearer member-token", true),
+            service,
+        )
+        .await;
+        assert!(
+            data::room::get_alias_room_id(&RoomAliasId::parse(alias).unwrap())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            ok(admin(TestClient::get(&canonical_url)), service).await,
+            canonical_before
+        );
+        let state = crate::room::get_state(
+            &room,
+            &crate::core::events::StateEventType::RoomCanonicalAlias,
+            "",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.event_id.as_str(),
+            canonical_event["event_id"].as_str().unwrap()
+        );
+    }
 }

@@ -164,18 +164,39 @@ pub async fn delete_media_by_ids(
     Ok((deleted, total))
 }
 
+/// Protect retained user and room avatars. Historical room avatars are retained
+/// conservatively: deleting them would also break profile rendering of old events.
+async fn protected_profile_media() -> AppResult<std::collections::HashSet<String>> {
+    #[derive(diesel::QueryableByName)]
+    struct Reference {
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        url: Option<String>,
+    }
+    let rows = diesel::sql_query(
+        "SELECT avatar_url AS url FROM user_profiles WHERE avatar_url IS NOT NULL UNION SELECT avatar_url AS url FROM room_users WHERE avatar_url IS NOT NULL UNION SELECT d.json_data->'content'->>'url' AS url FROM event_datas d JOIN events e ON e.id=d.event_id WHERE e.ty='m.room.avatar' AND e.state_key='' AND NOT e.is_outlier AND NOT e.is_rejected AND NOT e.soft_failed"
+    ).load::<Reference>(&mut data::db()).await?;
+    Ok(rows.into_iter().filter_map(|row| row.url).collect())
+}
+
 pub async fn delete_old_local_media(
     server_name: &ServerName,
     before_ts: i64,
     size_gt: i64,
+    keep_profiles: bool,
 ) -> AppResult<(Vec<String>, i64)> {
-    let media_ids = media_metadatas::table
+    let protected = if keep_profiles {
+        protected_profile_media().await?
+    } else {
+        Default::default()
+    };
+    let mut media_ids = media_metadatas::table
         .filter(media_metadatas::origin_server.eq(server_name))
         .filter(media_metadatas::created_at.lt(UnixMillis(before_ts as u64)))
         .filter(media_metadatas::file_size.gt(size_gt))
         .select(media_metadatas::media_id)
         .load::<String>(&mut crate::data::db())
         .await?;
+    media_ids.retain(|id| !protected.contains(&format!("mxc://{server_name}/{id}")));
     delete_media_by_ids(server_name, &media_ids).await
 }
 

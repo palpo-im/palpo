@@ -46,6 +46,7 @@ pub struct UserInfoV2 {
     pub admin: bool,
     pub deactivated: bool,
     pub shadow_banned: bool,
+    pub suspended: bool,
     pub locked: bool,
     pub creation_ts: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,6 +318,7 @@ async fn build_user_info(user_id: &UserId) -> crate::AppResult<UserInfoV2> {
         admin: db_user.is_admin,
         deactivated: db_user.deactivated_at.is_some(),
         shadow_banned: db_user.shadow_banned,
+        suspended: db_user.suspended_at.is_some(),
         locked: db_user.locked_at.is_some(),
         creation_ts: db_user.created_at.get() as i64,
         appservice_id: db_user.appservice_id,
@@ -349,6 +351,7 @@ async fn build_users_list(
             admin: db_user.is_admin,
             deactivated: db_user.deactivated_at.is_some(),
             shadow_banned: db_user.shadow_banned,
+            suspended: db_user.suspended_at.is_some(),
             locked: db_user.locked_at.is_some(),
             creation_ts: db_user.created_at.get() as i64,
             appservice_id: db_user.appservice_id,

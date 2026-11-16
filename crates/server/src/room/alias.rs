@@ -5,7 +5,6 @@ use crate::core::UnixMillis;
 use crate::core::appservice::query::{QueryRoomAliasReqArgs, query_room_alias_request};
 use crate::core::client::room::AliasResBody;
 use crate::core::events::TimelineEventType;
-use crate::core::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use crate::core::federation::query::directory_request;
 use crate::core::identifiers::*;
 use crate::data::room::DbRoomAlias;
@@ -233,27 +232,39 @@ pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()
     let room_id = resolve_local_alias(alias_id).await?;
     let room_version = crate::room::get_version(&room_id).await?;
     if user_can_remove_alias(alias_id, user).await? {
-        let state_alias = super::get_canonical_alias(&room_id);
-
-        if state_alias.await.is_ok() {
-            timeline::build_and_append_pdu(
-                PduBuilder {
-                    event_type: TimelineEventType::RoomCanonicalAlias,
-                    content: to_raw_value(&RoomCanonicalAliasEventContent {
-                        alias: None,
-                        alt_aliases: vec![], // TODO
-                    })
-                    .expect("We checked that alias earlier, it must be fine"),
-                    state_key: Some("".to_owned()),
-                    ..Default::default()
-                },
-                &user.id,
-                &room_id,
-                &room_version,
-                &super::lock_state(&room_id).await,
-            )
-            .await
-            .ok();
+        let state_lock = super::lock_state(&room_id).await;
+        let canonical =
+            match super::get_state(&room_id, &StateEventType::RoomCanonicalAlias, "", None).await {
+                Ok(event) => Some(event),
+                Err(error) if error.is_not_found() => None,
+                Err(error) => return Err(error),
+            };
+        if let Some(event) = canonical {
+            let mut content: serde_json::Value = serde_json::from_str(event.content.get())?;
+            if remove_advertised_alias(&mut content, alias_id.as_str()) {
+                // Directory deletion is permitted independently of room state rights.
+                // A retained power level does not authorize a departed member to send state.
+                // Do not discard unrelated preferred aliases, or publish a fake empty event.
+                let can_update = super::user::is_joined(&user.id, &room_id).await?
+                    && super::get_power_levels(&room_id)
+                        .await?
+                        .user_can_send_state(&user.id, StateEventType::RoomCanonicalAlias);
+                if can_update {
+                    timeline::build_and_append_pdu(
+                        PduBuilder {
+                            event_type: TimelineEventType::RoomCanonicalAlias,
+                            content: to_raw_value(&content)?,
+                            state_key: Some("".to_owned()),
+                            ..Default::default()
+                        },
+                        &user.id,
+                        &room_id,
+                        &room_version,
+                        &state_lock,
+                    )
+                    .await?;
+                }
+            }
         }
         data::room::remove_alias(alias_id).await?;
 
@@ -262,6 +273,26 @@ pub async fn remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<()
         Err(MatrixError::forbidden("User is not permitted to remove this alias.", None).into())
     }
 }
+fn remove_advertised_alias(content: &mut serde_json::Value, target: &str) -> bool {
+    let mut changed = false;
+    if content["alias"].as_str() == Some(target) {
+        content
+            .as_object_mut()
+            .expect("state content object")
+            .remove("alias");
+        changed = true;
+    }
+    if let Some(aliases) = content
+        .get_mut("alt_aliases")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        let before = aliases.len();
+        aliases.retain(|alias| alias.as_str() != Some(target));
+        changed |= before != aliases.len();
+    }
+    changed
+}
+
 #[tracing::instrument]
 async fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResult<bool> {
     let room_id = resolve_local_alias(alias_id).await?;
@@ -289,5 +320,25 @@ async fn user_can_remove_alias(alias_id: &RoomAliasId, user: &DbUser) -> AppResu
     } else {
         error!("Room {} has no m.room.create event (VERY BAD)!", room_id);
         Err(AppError::public("Room has no m.room.create event"))
+    }
+}
+
+#[cfg(test)]
+mod advertised_alias_tests {
+    use serde_json::json;
+
+    use super::remove_advertised_alias;
+    #[test]
+    fn removal_preserves_other_aliases_and_custom_content() {
+        let mut state = json!({"alias":"#main:example","alt_aliases":["#a:example","#b:example"],"org.example.custom":true});
+        assert!(remove_advertised_alias(&mut state, "#a:example"));
+        assert_eq!(
+            state,
+            json!({"alias":"#main:example","alt_aliases":["#b:example"],"org.example.custom":true})
+        );
+        assert!(!remove_advertised_alias(&mut state, "#missing:example"));
+        assert!(remove_advertised_alias(&mut state, "#main:example"));
+        assert_eq!(state["alt_aliases"], json!(["#b:example"]));
+        assert!(state.get("alias").is_none());
     }
 }
