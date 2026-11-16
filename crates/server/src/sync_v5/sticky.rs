@@ -27,13 +27,16 @@ pub(super) struct Offer {
     pub(super) senders: BTreeMap<OwnedRoomId, BTreeSet<OwnedUserId>>,
 }
 
-pub(super) fn configure(state: &mut Delivery, request: &SyncEventsReqBody) {
-    let config = serde_json::to_vec(&(
+fn config_key(request: &SyncEventsReqBody) -> Vec<u8> {
+    serde_json::to_vec(&(
         &request.extensions.sticky_events,
         &request.lists,
         &request.room_subscriptions,
     ))
-    .expect("sticky config serializes");
+    .expect("sticky config serializes")
+}
+pub(super) fn configure(state: &mut Delivery, request: &SyncEventsReqBody) {
+    let config = config_key(request);
     if state.config != config {
         state.config = config;
         state.generation = state.generation.saturating_add(1);
@@ -53,12 +56,12 @@ pub(super) async fn acknowledge(
     if !request.extensions.sticky_events.enabled {
         return Ok(());
     }
-    let Some(token) = token else {
-        return Ok(());
-    };
-    update_required_state_cache(user, device, &request.conn_id, |cached| {
+    let accepted = update_required_state_cache(user, device, &request.conn_id, |cached| {
         let state = &mut cached.sticky_delivery;
-        if let Some(offer) = state.offers.get(token).cloned()
+        if state.config != config_key(request) {
+            return false;
+        }
+        if let Some(offer) = token.and_then(|token| state.offers.get(token)).cloned()
             && offer.generation == state.generation
         {
             for (room, progress) in offer.progress {
@@ -72,8 +75,15 @@ pub(super) async fn acknowledge(
                 }
             }
         }
+        true
     })
-    .await
+    .await?;
+    if !accepted {
+        return Err(crate::AppError::internal(
+            "sticky sync request configuration is stale",
+        ));
+    }
+    Ok(())
 }
 
 fn scope(
