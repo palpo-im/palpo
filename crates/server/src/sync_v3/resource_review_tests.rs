@@ -209,7 +209,8 @@ async fn filtered_batch() {
         "ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]}
     }});
     let args =
-        serde_json::from_value(json!({"since":initial.next_batch,"filter":filters})).unwrap();
+        serde_json::from_value(json!({"since":initial.next_batch,"filter":filters.to_string()}))
+            .unwrap();
     spy.reset();
     let response = sync_events(&sender, "D".into(), &args).await.unwrap();
     assert!(response.rooms.join.is_empty());
@@ -268,10 +269,10 @@ async fn filtered_batch() {
         &service,
     )
     .await;
-    let args = serde_json::from_value(
-        json!({"since":since.to_string(),"filter":{"room":{"ephemeral":{"types":["m.typing"]}}}}),
-    )
-    .unwrap();
+    let filter = json!({"room":{"ephemeral":{"types":["m.typing"]}}});
+    let args =
+        serde_json::from_value(json!({"since":since.to_string(),"filter":filter.to_string()}))
+            .unwrap();
     let response = sync_events(&sender, "D".into(), &args).await.unwrap();
     let body = serde_json::to_value(response).unwrap();
     assert!(
