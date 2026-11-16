@@ -79,7 +79,7 @@ async fn lock_sticky_stream_shared(conn: &mut AsyncPgConnection) -> horme::Resul
     Ok(())
 }
 
-/// Read the global stream position after all earlier presence, typing, live publication,
+/// Read the global stream position after all earlier receipts, presence, typing, live publication,
 /// sticky, device-inbox, device/signing-key and this user's account-data writes commit or roll
 /// back.
 ///
@@ -94,9 +94,11 @@ pub async fn curr_sn_after_sync_writes(
     let curr_sn =
         connect()
             .transaction::<_, crate::AppError, _>(async |conn| {
-                // Lock order: presence, typing, profiles, live/sticky, inbox, keys, account data.
+                // Lock order: receipts, presence, typing, profiles, live/sticky, inbox, keys,
+                // account data. Receipt writers take their stream lock before summary locks.
                 // Key publishers use a shared stream lock; the short exclusive
                 // key snapshot waits for every in-flight key allocation.
+                crate::data::room::receipt::lock_receipt_snapshot(conn).await?;
                 crate::data::user::lock_presence_stream_shared(conn).await?;
                 crate::data::room::typing::lock_typing_stream_shared(conn).await?;
                 crate::data::user::lock_profile_stream_shared(conn).await?;
@@ -366,6 +368,30 @@ pub async fn timeline_ttls(
         ttls.insert(event_sn, ttl_ms(UnixMillis(expires_at as u64), now));
     }
     Ok(ttls)
+}
+
+/// Candidate rooms for incremental sticky delivery, using exactly the same
+/// half-open publication and expiry bounds as `unexpired`.
+pub(crate) async fn changed_rooms(
+    rooms: &[OwnedRoomId],
+    since: Seqnum,
+    until: Seqnum,
+    now: UnixMillis,
+) -> AppResult<std::collections::HashSet<OwnedRoomId>> {
+    let mut result = std::collections::HashSet::new();
+    for chunk in rooms.chunks(256) {
+        let rows = event_stickies::table
+            .filter(event_stickies::room_id.eq_any(chunk))
+            .filter(event_stickies::deliver_sn.ge(since))
+            .filter(event_stickies::deliver_sn.lt(until))
+            .filter(event_stickies::expires_at.gt(now.0 as i64))
+            .select(event_stickies::room_id)
+            .distinct()
+            .load::<OwnedRoomId>(&mut crate::data::db())
+            .await?;
+        result.extend(rows);
+    }
+    Ok(result)
 }
 
 /// Deletes rows for events that can no longer be delivered.

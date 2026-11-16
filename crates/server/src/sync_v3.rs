@@ -257,8 +257,63 @@ pub async fn sync_events(
     } else {
         frames.clone()
     };
+    let incremental = !full_state && since_tk.is_some_and(|since| since.event_sn() > 0);
+    let visible_rooms = all_joined_rooms
+        .iter()
+        .filter(|room| includes_room(&filter.room, room) && frames.contains_key(*room))
+        .cloned()
+        .collect::<Vec<_>>();
+    let notification_cursors = if incremental {
+        Some(room::user::last_read_notifications(sender_id, &visible_rooms).await?)
+    } else {
+        None
+    };
+    let empty_sections = room_types_are_empty(&filter.room.timeline)
+        && room_section_is_empty(&filter.room.state)
+        && room_section_is_empty(&filter.room.ephemeral)
+        && room_section_is_empty(&filter.room.account_data)
+        && !filter.room.timeline.unread_thread_notifications;
+    let sticky_rooms = if incremental && empty_sections {
+        crate::event::sticky::changed_rooms(
+            &visible_rooms,
+            since_tk.expect("incremental token").event_sn(),
+            next_batch.event_sn(),
+            UnixMillis::now(),
+        )
+        .await?
+    } else {
+        HashSet::new()
+    };
     for room_id in &all_joined_rooms {
         let frame = frames.get(room_id).copied();
+        let previous = previous_frames.get(room_id).copied();
+        let last_read = notification_cursors
+            .as_ref()
+            .map(|cursors| cursors.get(room_id).copied().unwrap_or_default());
+        let deliver = includes_room(&filter.room, room_id);
+        if incremental
+            && frame.is_some()
+            && frame == previous
+            && (!deliver
+                || (empty_sections
+                    && last_read.is_some_and(|read| {
+                        read < since_tk.expect("incremental token").event_sn()
+                    })
+                    && !sticky_rooms.contains(room_id)))
+        {
+            // Membership/device/presence deltas are unchanged at these frames.
+            // Receipts and sticky updates were checked in batches; the filtered
+            // sections cannot contribute anything to this room's response.
+            if deliver {
+                room::lazy_loading::lazy_load_confirm_delivery(
+                    sender_id,
+                    device_id,
+                    room_id,
+                    since_tk.expect("incremental token").event_sn(),
+                )?;
+            }
+            continue;
+        }
         let (joined_room, _) = load_joined_room_with_frames(
             sender_id,
             device_id,
@@ -272,7 +327,11 @@ pub async fn sync_events(
             args.use_state_after,
             &mut joined_users,
             &mut left_users,
-            Some((frame, previous_frames.get(room_id).copied())),
+            Some(CapturedRoom {
+                current: frame,
+                previous,
+                last_read,
+            }),
         )
         // Do not acknowledge a window that a joined room failed to load.
         .await?;
@@ -583,6 +642,13 @@ async fn load_joined_room(
     .await
 }
 
+#[derive(Clone, Copy)]
+struct CapturedRoom {
+    current: Option<i64>,
+    previous: Option<i64>,
+    last_read: Option<Seqnum>,
+}
+
 async fn load_joined_room_with_frames(
     sender_id: &UserId,
     device_id: &DeviceId,
@@ -596,7 +662,7 @@ async fn load_joined_room_with_frames(
     _use_state_after: bool,
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
-    frames: Option<(Option<i64>, Option<i64>)>,
+    frames: Option<CapturedRoom>,
 ) -> AppResult<(JoinedRoom, Option<BatchToken>)> {
     #[cfg(test)]
     if joined_room_failure_tests::FAIL_ROOM
@@ -626,7 +692,7 @@ async fn load_joined_room_with_frames(
 
     // Another worker may already have appended state past this captured sync
     // window. Resolve the delta against the frame this response can include.
-    let current_frame_id = if let Some((frame, _)) = frames {
+    let current_frame_id = if let Some(CapturedRoom { current: frame, .. }) = frames {
         let Some(frame) = frame else {
             return Ok((JoinedRoom::default(), None));
         };
@@ -640,7 +706,7 @@ async fn load_joined_room_with_frames(
     };
     // V3 next_batch is the first unseen position, and timeline reads include
     // `since`. Its previous state must therefore be strictly before that point.
-    let since_frame_id = if let Some((_, previous)) = frames {
+    let since_frame_id = if let Some(CapturedRoom { previous, .. }) = frames {
         previous
     } else if let Some(since_tk) = since_tk {
         match captured_sync_frame(room_id, since_tk.event_sn().saturating_sub(1)).await {
@@ -766,7 +832,11 @@ async fn load_joined_room_with_frames(
     };
 
     let send_notification_counts = !timeline.events.is_empty()
-        || room::user::last_read_notification(sender_id, room_id).await? >= since_tk.event_sn();
+        || if let Some(read) = frames.and_then(|frame| frame.last_read) {
+            read >= since_tk.event_sn()
+        } else {
+            room::user::last_read_notification(sender_id, room_id).await? >= since_tk.event_sn()
+        };
     let mut timeline_users = HashSet::new();
     let mut timeline_pdu_ids = HashSet::new();
     for (_, event) in &timeline.events {
@@ -1332,10 +1402,6 @@ async fn load_left_room(
     )
     .await?;
     let mut limited = timeline.limited;
-    let since_tk = since_tk.unwrap_or(BatchToken::LIVE_MIN);
-
-    let _send_notification_counts = !timeline.events.is_empty()
-        || room::user::last_read_notification(sender_id, room_id).await? >= since_tk.event_sn();
     let mut timeline_users = HashSet::new();
     let mut timeline_pdu_ids = HashSet::new();
     for (_, event) in &timeline.events {

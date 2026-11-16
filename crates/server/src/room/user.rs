@@ -147,12 +147,36 @@ pub async fn last_read_notification(user_id: &UserId, room_id: &RoomId) -> AppRe
     let sn = event_receipts::table
         .filter(event_receipts::user_id.eq(user_id))
         .filter(event_receipts::room_id.eq(room_id))
-        .order_by(event_receipts::event_sn.desc())
-        .select(event_receipts::event_sn)
-        .first::<Seqnum>(&mut crate::data::db())
-        .await
-        .unwrap_or_default();
-    Ok(sn)
+        .select(diesel::dsl::max(event_receipts::sn))
+        .first::<Option<Seqnum>>(&mut crate::data::db())
+        .await?;
+    Ok(sn.unwrap_or_default())
+}
+
+/// The same per-room MAX used by `last_read_notification`, in bounded batches.
+/// Missing receipts mean zero; query failures must not advance a sync cursor.
+pub(crate) async fn last_read_notifications(
+    user_id: &UserId,
+    rooms: &[OwnedRoomId],
+) -> AppResult<HashMap<OwnedRoomId, Seqnum>> {
+    let mut result = HashMap::new();
+    for chunk in rooms.chunks(256) {
+        let rows = event_receipts::table
+            .filter(event_receipts::user_id.eq(user_id))
+            .filter(event_receipts::room_id.eq_any(chunk))
+            .group_by(event_receipts::room_id)
+            .select((
+                event_receipts::room_id,
+                diesel::dsl::max(event_receipts::sn),
+            ))
+            .load::<(OwnedRoomId, Option<Seqnum>)>(&mut crate::data::db())
+            .await?;
+        result.extend(
+            rows.into_iter()
+                .map(|(room, sn)| (room, sn.unwrap_or_default())),
+        );
+    }
+    Ok(result)
 }
 
 pub async fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoomId>> {
