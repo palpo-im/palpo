@@ -857,6 +857,60 @@ async fn filtered_inert_rooms() {
     );
 
     receipt_publication_fence(&sender, &room, message["event_id"].as_str().unwrap()).await;
+    receipt_fence_keeps_unrelated_inboxes_independent(&sender).await;
+}
+
+async fn receipt_fence_keeps_unrelated_inboxes_independent(user: &UserId) {
+    use diesel::sql_types::BigInt;
+    use diesel_async::SimpleAsyncConnection as _;
+    use horme::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Waiting {
+        #[diesel(sql_type = BigInt)]
+        count: i64,
+    }
+    data::user::device::create_device(
+        user,
+        &OwnedDeviceId::from("UNRELATED"),
+        "receipt-unrelated-device",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let mut gate = data::checkout().await.unwrap();
+    gate.batch_execute("BEGIN").await.unwrap();
+    data::user::device::lock_inbox_stream(&mut gate, user, "D".into())
+        .await
+        .unwrap();
+    let blocked_user = user.to_owned();
+    let blocked = tokio::spawn(async move {
+        crate::event::sticky::curr_sn_after_sync_writes(&blocked_user, "D".into()).await
+    });
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let waiting = diesel::sql_query("SELECT count(*) AS count FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND NOT granted")
+                .get_result::<Waiting>(&mut data::db()).await.unwrap();
+            if waiting.count > 0 { break; }
+            assert!(!blocked.is_finished(), "the first snapshot must wait for its inbox");
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    let independent = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::event::sticky::curr_sn_after_sync_writes(user, "UNRELATED".into()),
+    )
+    .await;
+    gate.batch_execute("COMMIT").await.unwrap();
+    drop(gate);
+    tokio::time::timeout(Duration::from_secs(4), blocked)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    independent
+        .expect("a slow inbox must not hold the global receipt snapshot fence")
+        .unwrap();
 }
 
 async fn seed_receipt_history(user: &UserId, room: &RoomId, event: &str) {

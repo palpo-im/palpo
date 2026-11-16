@@ -143,8 +143,8 @@ pub async fn remove_actions_until(
 pub async fn record_read_and_clear(receipt: &DbReceipt, scope: &ReceiptThread) -> AppResult<()> {
     crate::data::db()
         .transaction::<_, AppError, _>(async |conn| {
-            crate::data::room::receipt::publish_receipt_with_conn(conn, receipt).await?;
             lock_summary(conn, &receipt.user_id, &receipt.room_id).await?;
+            crate::data::room::receipt::publish_receipt_with_conn(conn, receipt).await?;
             clear_locked(
                 conn,
                 &receipt.user_id,

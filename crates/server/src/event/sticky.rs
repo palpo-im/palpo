@@ -94,11 +94,12 @@ pub async fn curr_sn_after_sync_writes(
     let curr_sn =
         connect()
             .transaction::<_, crate::AppError, _>(async |conn| {
-                // Lock order: receipts, presence, typing, profiles, live/sticky, inbox, keys,
-                // account data. Receipt writers take their stream lock before summary locks.
+                // Lock order: presence, typing, profiles, live/sticky, inbox, keys,
+                // account data, receipts. Receipt writers acquire summary locks before
+                // their publication lock, and no stream locks after it. Taking the
+                // receipt snapshot last avoids blocking unrelated inbox snapshots.
                 // Key publishers use a shared stream lock; the short exclusive
                 // key snapshot waits for every in-flight key allocation.
-                crate::data::room::receipt::lock_receipt_snapshot(conn).await?;
                 crate::data::user::lock_presence_stream_shared(conn).await?;
                 crate::data::room::typing::lock_typing_stream_shared(conn).await?;
                 crate::data::user::lock_profile_stream_shared(conn).await?;
@@ -106,6 +107,7 @@ pub async fn curr_sn_after_sync_writes(
                 crate::data::user::device::lock_inbox_stream(conn, user_id, device_id).await?;
                 crate::data::user::key::lock_key_change_snapshot(conn).await?;
                 crate::data::user::lock_account_data_snapshot(conn, user_id).await?;
+                crate::data::room::receipt::lock_receipt_snapshot(conn).await?;
                 Ok(diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "SELECT last_value FROM occur_sn_seq",
                 )

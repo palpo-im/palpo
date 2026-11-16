@@ -13,8 +13,8 @@ use crate::schema::*;
 
 const RECEIPT_STREAM_LOCK: i64 = 0x50414c52435054;
 
-/// Wait for all receipt publications before capturing a sync token. This must
-/// be the first stream lock: receipt writers acquire it before summary locks.
+/// Wait for receipt publications immediately before capturing a sync token,
+/// after the other stream locks. Writers acquire summary locks before this fence.
 pub async fn lock_receipt_snapshot(conn: &mut AsyncPgConnection) -> DataResult<()> {
     diesel::sql_query("SELECT pg_advisory_xact_lock($1)")
         .bind::<diesel::sql_types::BigInt, _>(RECEIPT_STREAM_LOCK)
@@ -23,9 +23,10 @@ pub async fn lock_receipt_snapshot(conn: &mut AsyncPgConnection) -> DataResult<(
     Ok(())
 }
 
-/// Publish a receipt inside the caller's transaction. Acquire the shared stream
-/// lock before any other locks, and retain it through commit. Concurrent writers
-/// are permitted; snapshots wait for every writer. The supplied `sn` is ignored.
+/// Publish inside the caller's transaction, retaining the shared stream lock
+/// through commit. Acquire any summary locks first, and no other stream locks
+/// afterward. Concurrent writers are permitted; snapshots wait for every writer.
+/// The supplied `sn` is ignored.
 pub async fn publish_receipt_with_conn(
     conn: &mut AsyncPgConnection,
     receipt: &DbReceipt,

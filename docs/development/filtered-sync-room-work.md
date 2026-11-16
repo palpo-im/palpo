@@ -20,9 +20,12 @@ The watermark is the receipt publication position, rather than the position of
 the message it marks as read. Reading an older message must still cause updated
 notification counts. Query errors propagate instead of acknowledging an empty
 batch. Receipt insertions allocate positions under a shared transaction advisory
-lock; sync snapshots take the exclusive lock first and wait for publication to
+lock; sync snapshots take the exclusive lock last and wait for publication to
 commit or roll back. Client receipt insertion and notification clearing retain
 one commit point. No federation request runs while holding this transaction.
+Receipt writers take their notification-summary locks before the publication
+fence. A snapshot waiting for one device's inbox therefore cannot hold the
+receipt fence and block another device's independent snapshot.
 
 The isolated regression exercises the loader bypass, unchanged/changed frames,
 full-state fallback, sticky delivery, current and older-event receipts, another
