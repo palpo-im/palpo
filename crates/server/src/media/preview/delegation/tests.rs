@@ -56,7 +56,7 @@ impl Handler for Peer {
         match reply {
             Reply::Personal => res.render(Json(json!({"og:title":user,"og:image":"mxc://preview.example/image","matrix:image:size":123}))),
             Reply::Json(value) => res.render(Json(value)),
-            Reply::Failure => { res.status_code(StatusCode::SERVICE_UNAVAILABLE); res.render("failed"); }
+            Reply::Failure => { res.status_code(StatusCode::SERVICE_UNAVAILABLE); res.render(Json(json!({"og:title":"failure payload"}))); }
             Reply::Text(value) => res.render(value),
             Reply::Redirect(url) => { res.status_code(StatusCode::FOUND); res.add_header("Location",url,true).unwrap(); }
             Reply::Timeout => { tokio::time::sleep(Duration::from_secs(3)).await; res.render(Json(json!({"og:title":"late"}))); }
@@ -229,7 +229,7 @@ fn run(enabled: bool) {
                 Reply::Json(json!({"og:title":{"nested":"invalid"}})),
                 Reply::Json(json!({"og:title":123})),
                 Reply::Json(json!({"og:image:width":-1})),
-                Reply::Text("x".repeat(2048)),
+                Reply::Json(json!({"og:title":"x".repeat(2048)})),
                 Reply::Redirect(last.origin.clone()),Reply::Timeout] {
                 first.set(invalid);
                 title(&service,TARGET,"alice","@alice:preview.example").await;
