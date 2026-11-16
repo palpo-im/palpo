@@ -43,6 +43,56 @@ fn includes_room(filter: &RoomDataFilter, room_id: &RoomId) -> bool {
             .is_none_or(|rooms| rooms.iter().any(|room| room == room_id))
 }
 
+/// Only skip work for filters that provably cannot return any event.
+fn room_section_is_empty(filter: &RoomEventFilter) -> bool {
+    filter.limit == Some(0) || room_types_are_empty(filter)
+}
+
+fn room_types_are_empty(filter: &RoomEventFilter) -> bool {
+    filter.not_types.iter().any(|ty| ty == "*") || filter.types.as_ref().is_some_and(Vec::is_empty)
+}
+
+/// Capture per-room publication frames with bounded SQL batches. These bounds
+/// match the scalar lookup; current room tips may be newer than this response.
+async fn captured_sync_frames(
+    rooms: &[OwnedRoomId],
+    until: Seqnum,
+) -> AppResult<HashMap<OwnedRoomId, i64>> {
+    use diesel::prelude::*;
+    use horme::RunQueryDsl;
+
+    use crate::data::schema::{event_points, events};
+    let mut frames = HashMap::new();
+    for chunk in rooms.chunks(256) {
+        let rows = event_points::table
+            .inner_join(
+                events::table.on(events::id
+                    .eq(event_points::event_id)
+                    .and(events::room_id.eq(event_points::room_id))),
+            )
+            .filter(event_points::room_id.eq_any(chunk))
+            .filter(event_points::live_published_frame_id.is_not_null())
+            .filter(events::is_outlier.eq(false))
+            .filter(events::soft_failed.eq(false))
+            .filter(events::is_rejected.eq(false))
+            .filter(events::stream_ordering.ge(0))
+            .filter(event_points::live_published_sn.le(until))
+            .distinct_on(event_points::room_id)
+            .order_by((
+                event_points::room_id.asc(),
+                event_points::live_published_sn.desc(),
+            ))
+            .select((event_points::room_id, event_points::live_published_frame_id))
+            .load::<(OwnedRoomId, Option<i64>)>(&mut data::db())
+            .await?;
+        frames.extend(
+            rows.into_iter()
+                .filter_map(|(room, frame)| frame.map(|frame| (room, frame))),
+        );
+    }
+    Ok(frames)
+}
+
 fn includes_global_event(
     filter: &NonRoomDataFilter,
     event_type: &str,
@@ -182,8 +232,15 @@ pub async fn sync_events(
     let mut left_users = HashSet::new();
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
+    let frames = captured_sync_frames(&all_joined_rooms, curr_sn).await?;
+    let previous_frames = if let Some(since) = since_tk {
+        captured_sync_frames(&all_joined_rooms, since.event_sn().saturating_sub(1)).await?
+    } else {
+        frames.clone()
+    };
     for room_id in &all_joined_rooms {
-        let (joined_room, _) = load_joined_room(
+        let frame = frames.get(room_id).copied();
+        let (joined_room, _) = load_joined_room_with_frames(
             sender_id,
             device_id,
             room_id,
@@ -196,6 +253,7 @@ pub async fn sync_events(
             args.use_state_after,
             &mut joined_users,
             &mut left_users,
+            Some((frame, previous_frames.get(room_id).copied())),
         )
         // Do not acknowledge a window that a joined room failed to load.
         .await?;
@@ -488,6 +546,39 @@ async fn load_joined_room(
     joined_users: &mut HashSet<OwnedUserId>,
     left_users: &mut HashSet<OwnedUserId>,
 ) -> AppResult<(JoinedRoom, Option<BatchToken>)> {
+    load_joined_room_with_frames(
+        sender_id,
+        device_id,
+        room_id,
+        is_peeking,
+        since_tk,
+        until_tk,
+        next_batch,
+        full_state,
+        filter,
+        _use_state_after,
+        joined_users,
+        left_users,
+        None,
+    )
+    .await
+}
+
+async fn load_joined_room_with_frames(
+    sender_id: &UserId,
+    device_id: &DeviceId,
+    room_id: &RoomId,
+    is_peeking: bool,
+    since_tk: Option<BatchToken>,
+    until_tk: Option<BatchToken>,
+    next_batch: BatchToken,
+    full_state: bool,
+    filter: &FilterDefinition,
+    _use_state_after: bool,
+    joined_users: &mut HashSet<OwnedUserId>,
+    left_users: &mut HashSet<OwnedUserId>,
+    frames: Option<(Option<i64>, Option<i64>)>,
+) -> AppResult<(JoinedRoom, Option<BatchToken>)> {
     #[cfg(test)]
     if joined_room_failure_tests::FAIL_ROOM
         .lock()
@@ -497,7 +588,10 @@ async fn load_joined_room(
     {
         return Err(AppError::internal("injected joined room database failure"));
     }
-    if !full_state && since_tk.map(|s| s.event_sn()) > Some(data::curr_sn().await?) {
+    let until_sn = until_tk
+        .map(|token| token.event_sn())
+        .unwrap_or_else(|| next_batch.event_sn().saturating_sub(1));
+    if !full_state && since_tk.map(|s| s.event_sn()) > Some(until_sn) {
         return Ok((JoinedRoom::default(), None));
     }
     let deliver_room = includes_room(&filter.room, room_id);
@@ -511,19 +605,25 @@ async fn load_joined_room(
         _ => false,
     };
 
-    let until_sn = until_tk
-        .map(|token| token.event_sn())
-        .unwrap_or_else(|| next_batch.event_sn().saturating_sub(1));
     // Another worker may already have appended state past this captured sync
     // window. Resolve the delta against the frame this response can include.
-    let current_frame_id = match captured_sync_frame(room_id, until_sn).await {
-        Ok(frame) => frame,
-        Err(error) if error.is_not_found() => return Ok((JoinedRoom::default(), None)),
-        Err(error) => return Err(error),
+    let current_frame_id = if let Some((frame, _)) = frames {
+        let Some(frame) = frame else {
+            return Ok((JoinedRoom::default(), None));
+        };
+        frame
+    } else {
+        match captured_sync_frame(room_id, until_sn).await {
+            Ok(frame) => frame,
+            Err(error) if error.is_not_found() => return Ok((JoinedRoom::default(), None)),
+            Err(error) => return Err(error),
+        }
     };
     // V3 next_batch is the first unseen position, and timeline reads include
     // `since`. Its previous state must therefore be strictly before that point.
-    let since_frame_id = if let Some(since_tk) = since_tk {
+    let since_frame_id = if let Some((_, previous)) = frames {
+        previous
+    } else if let Some(since_tk) = since_tk {
         match captured_sync_frame(room_id, since_tk.event_sn().saturating_sub(1)).await {
             Ok(frame) => Some(frame),
             Err(error) if error.is_not_found() => None,
@@ -917,19 +1017,22 @@ async fn load_joined_room(
     }
 
     let mut edus: Vec<RawJson<AnySyncEphemeralRoomEvent>> = Vec::new();
-    for (_, content) in
-        data::room::receipt::read_receipts(room_id, since_tk.event_sn(), Some(sender_id)).await?
-    {
-        let receipt = SyncReceiptEvent { content };
-        edus.push(RawJson::new(&receipt)?.cast());
-    }
-    if room::typing::last_typing_update(room_id).await? >= since_tk.event_sn() {
-        edus.push(
-            serde_json::from_str(&serde_json::to_string(
-                &room::typing::all_typings(room_id).await?,
-            )?)
-            .expect("event is valid, we just created it"),
-        );
+    if !room_section_is_empty(&filter.room.ephemeral) {
+        for (_, content) in
+            data::room::receipt::read_receipts(room_id, since_tk.event_sn(), Some(sender_id))
+                .await?
+        {
+            let receipt = SyncReceiptEvent { content };
+            edus.push(RawJson::new(&receipt)?.cast());
+        }
+        if room::typing::last_typing_update(room_id).await? >= since_tk.event_sn() {
+            edus.push(
+                serde_json::from_str(&serde_json::to_string(
+                    &room::typing::all_typings(room_id).await?,
+                )?)
+                .expect("event is valid, we just created it"),
+            );
+        }
     }
 
     edus.retain(|event| {
@@ -938,7 +1041,9 @@ async fn load_joined_room(
     });
     edus.truncate(filter.room.ephemeral.limit.unwrap_or(usize::MAX));
 
-    let account_events =
+    let account_events = if room_section_is_empty(&filter.room.account_data) {
+        Vec::new()
+    } else {
         data::user::data_changes(Some(room_id), sender_id, since_tk.event_sn(), None)
             .await?
             .into_iter()
@@ -949,7 +1054,8 @@ async fn load_joined_room(
                 })
             })
             .take(filter.room.account_data.limit.unwrap_or(usize::MAX))
-            .collect();
+            .collect()
+    };
     let notify_summary = room::user::notify_summary(sender_id, room_id).await?;
     let mut notification_count = None;
     let mut highlight_count = None;
@@ -1425,7 +1531,11 @@ pub(crate) async fn load_timeline(
     }
     let limit = filter.and_then(|f| f.limit).unwrap_or(10).min(100);
     let mut is_backward = false;
-    let mut timeline_pdus = if let Some(since_tk) = since_tk {
+    let mut timeline_pdus = if filter.is_some_and(room_types_are_empty) {
+        // Empty types skip payload reads, but publication gaps below remain meaningful.
+        // A zero limit alone still probes one visible event to preserve truncation.
+        IndexMap::new()
+    } else if let Some(since_tk) = since_tk {
         if let Some(until_tk) = until_tk {
             let (min, max) = if until_tk.stream_ordering() > since_tk.stream_ordering() {
                 (since_tk, until_tk)
