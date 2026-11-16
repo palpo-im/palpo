@@ -191,6 +191,7 @@ jobs:
           # its own process and empty database in both supported feature modes.
           cases=(
             sync_v3::resource_review_tests::review_sync_batches_frames_and_skips_empty_event_sections
+            sync_v3::resource_review_tests::review_sync_notification_queries_follow_emitted_fields
             room::auth_chain::federation_access_tests::review_federation_event_reads_bind_rooms_before_auth_cache
             sync_v3::account_data_publication_tests::review_account_data_publication_fences_sync_and_releases_failures
             federation::error_response_tests::review_federation_error_transport_is_bounded
