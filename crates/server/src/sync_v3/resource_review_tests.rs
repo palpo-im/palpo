@@ -138,6 +138,157 @@ async fn run() {
 
 #[test]
 #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
+fn review_sync_batches_frames_and_skips_empty_event_sections() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(filtered_batch());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn filtered_batch() {
+    let (service, first_room, sender, peer) = setup().await;
+    for _ in 0..11 {
+        request(
+            TestClient::post("http://localhost/_matrix/client/v3/createRoom")
+                .add_header("Authorization", "Bearer alice", true)
+                .json(&json!({"room_version":"11","preset":"public_chat"})),
+            &service,
+        )
+        .await;
+    }
+    let rooms = data::user::joined_rooms(&sender).await.unwrap();
+    assert_eq!(rooms.len(), 12);
+    let initial_args = serde_json::from_value(json!({})).unwrap();
+    let initial = sync_events(&sender, "D".into(), &initial_args)
+        .await
+        .unwrap();
+    let since: BatchToken = initial.next_batch.parse().unwrap();
+    // Advance the global stream without changing any joined room.
+    data::next_sn().await.unwrap();
+    let until = data::curr_sn().await.unwrap();
+    let spy = crate::test_database::sql_spy::SqlSpy::install().await;
+    let mut scalar = HashMap::new();
+    for room in &rooms {
+        scalar.insert(
+            room.clone(),
+            captured_sync_frame(room, until).await.unwrap(),
+        );
+    }
+    let scalar_queries = spy.snapshot().len();
+    spy.reset();
+    let batched = captured_sync_frames(&rooms, until).await.unwrap();
+    let batch_queries = spy.snapshot().len();
+    assert_eq!(batched, scalar);
+    assert!(
+        batch_queries < scalar_queries,
+        "scalar={scalar_queries} batch={batch_queries}"
+    );
+    spy.reset();
+    let across_chunks: Vec<_> = rooms.iter().cycle().take(257).cloned().collect();
+    assert_eq!(
+        captured_sync_frames(&across_chunks, until).await.unwrap(),
+        batched
+    );
+    assert_eq!(
+        spy.snapshot()
+            .iter()
+            .filter(|q| q.contains("DISTINCT ON"))
+            .count(),
+        2
+    );
+    let filters = json!({"room":{
+        "timeline":{"not_types":["*"]},"state":{"not_types":["*"]},
+        "ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]}
+    }});
+    let args =
+        serde_json::from_value(json!({"since":initial.next_batch,"filter":filters})).unwrap();
+    spy.reset();
+    let response = sync_events(&sender, "D".into(), &args).await.unwrap();
+    assert!(response.rooms.join.is_empty());
+    let queries = spy.snapshot();
+    assert!(
+        !queries.iter().any(|q| q.contains("event_receipts")),
+        "empty ephemeral section fetched receipts"
+    );
+    assert!(
+        !queries.iter().any(|q| q.contains("room_typings")),
+        "empty ephemeral section fetched typing"
+    );
+    assert!(
+        !queries
+            .iter()
+            .any(|q| q.contains("user_datas") && q.contains(first_room.as_str())),
+        "empty room account-data section loaded payload"
+    );
+    let frame_batches = queries
+        .iter()
+        .filter(|q| q.contains("DISTINCT ON") && q.contains("live_published_frame_id"))
+        .count();
+    assert_eq!(
+        frame_batches, 2,
+        "current/previous frames were not batched: {queries:?}"
+    );
+    spy.assert_coverage().await;
+    spy.uninstall().await;
+
+    // Equal captured bounds stay stable if later room events are published.
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{first_room}/state/m.room.topic"
+        ))
+        .add_header("Authorization", "Bearer alice", true)
+        .json(&json!({"topic":"after snapshot"})),
+        &service,
+    )
+    .await;
+    assert_eq!(captured_sync_frames(&rooms, until).await.unwrap(), batched);
+    // Partial type filters still fetch matching payloads, including independent typing.
+    request(
+        TestClient::put(format!(
+            "http://localhost/_matrix/client/v3/rooms/{first_room}/typing/{peer}"
+        ))
+        .add_header("Authorization", "Bearer bob", true)
+        .json(&json!({"typing":true,"timeout":30000})),
+        &service,
+    )
+    .await;
+    let args = serde_json::from_value(
+        json!({"since":since.to_string(),"filter":{"room":{"ephemeral":{"types":["m.typing"]}}}}),
+    )
+    .unwrap();
+    let response = sync_events(&sender, "D".into(), &args).await.unwrap();
+    let body = serde_json::to_value(response).unwrap();
+    assert!(
+        body["rooms"]["join"][first_room.as_str()]["ephemeral"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "m.typing")
+    );
+    // Failed storage must not turn an incomplete frame set into a successful sync.
+    use horme::RunQueryDsl;
+    diesel::sql_query("ALTER TABLE event_points RENAME TO review_missing_frame_points")
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    let failed = captured_sync_frames(&rooms, until).await;
+    diesel::sql_query("ALTER TABLE review_missing_frame_points RENAME TO event_points")
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    assert!(failed.is_err());
+}
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
 fn review_live_promotion_and_purge_share_fence_and_atomic_tips() {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
