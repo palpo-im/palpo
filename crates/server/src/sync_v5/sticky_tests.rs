@@ -335,6 +335,19 @@ async fn run() {
     )
     .await;
     assert!(ids(&state_page, &room).contains(&state));
+    // Older metadata may lack a sender column; the signed PDU remains authoritative.
+    diesel::sql_query("UPDATE events SET sender_id=NULL WHERE id=$1")
+        .bind::<Text, _>(&first)
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+    ok(&service,TestClient::put("http://localhost/_matrix/client/v3/user/@alice:sticky.example/account_data/m.ignored_user_list")
+        .json(&json!({"ignored_users":{"@unrelated:sticky.example":{}}})),"alice").await;
+    let legacy = sync(&service, config(&room, "legacy-sender", 100), None).await;
+    assert!(
+        ids(&legacy, &room).contains(&first),
+        "missing sender metadata discarded a valid sticky event"
+    );
     // Ignore rules apply independently of membership and sticky privileges.
     ok(&service,TestClient::put("http://localhost/_matrix/client/v3/user/@alice:sticky.example/account_data/m.ignored_user_list")
         .json(&json!({"ignored_users":{"@bob:sticky.example":{}}})),"alice").await;

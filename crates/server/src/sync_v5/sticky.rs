@@ -238,7 +238,11 @@ pub(super) async fn collect(
                 .filter(events::is_rejected.eq(false))
                 .filter(events::is_redacted.eq(false))
                 .filter(events::ty.ne("org.matrix.dummy_event"))
-                .filter(events::sender_id.ne_all(&ignored))
+                .filter(
+                    events::sender_id
+                        .ne_all(&ignored)
+                        .or(events::sender_id.is_null()),
+                )
                 .order(event_stickies::deliver_sn.asc())
                 .limit(limit)
                 .select((event_stickies::event_id, event_stickies::deliver_sn))
