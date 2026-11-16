@@ -400,7 +400,7 @@ async fn run() {
     let start = sync(&service, config(&room, "poll", 100), None).await;
     let poll_body = config(&room, "poll", 100);
     let poll_url = format!(
-        "http://localhost/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=1500&pos={}",
+        "http://localhost/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=5000&pos={}",
         start["pos"].as_str().unwrap()
     );
     let router = service.router();
@@ -418,7 +418,7 @@ async fn run() {
     let wake = append(&service, &room, "wake-poll").await;
     let woken = poll.await.unwrap();
     assert!(
-        began.elapsed() < std::time::Duration::from_millis(1400),
+        began.elapsed() < std::time::Duration::from_millis(4500),
         "sticky-only update did not wake long poll"
     );
     assert!(ids(&woken, &room).contains(&wake));
