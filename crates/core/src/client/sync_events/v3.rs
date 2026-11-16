@@ -390,7 +390,7 @@ impl Timeline {
 
     /// Returns true if there are no timeline updates.
     pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
+        self.events.is_empty() && !self.limited
     }
 }
 
@@ -802,6 +802,37 @@ impl ToDevice {
 //         assert_eq!(req.timeout, Some(Duration::from_millis(0)));
 //     }
 // }
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::{JoinedRoom, Timeline};
+
+    #[test]
+    fn an_empty_limited_timeline_retains_its_room_and_gap_marker() {
+        let mut room = JoinedRoom {
+            timeline: Timeline {
+                limited: true,
+                ..Timeline::default()
+            },
+            ..JoinedRoom::default()
+        };
+        assert!(!room.is_empty());
+        let json = serde_json::to_value(&room).unwrap();
+        assert_eq!(json["timeline"]["limited"], true);
+        assert_eq!(json["timeline"]["events"], serde_json::json!([]));
+        let restored: Timeline = serde_json::from_value(json["timeline"].clone()).unwrap();
+        assert!(!restored.is_empty());
+
+        room.timeline.limited = false;
+        assert!(room.is_empty());
+        assert!(
+            serde_json::to_value(room)
+                .unwrap()
+                .get("timeline")
+                .is_none()
+        );
+    }
+}
 
 #[cfg(all(test, feature = "unstable-msc4354"))]
 mod sticky_tests {
