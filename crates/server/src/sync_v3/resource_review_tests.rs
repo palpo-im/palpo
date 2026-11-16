@@ -880,7 +880,7 @@ async fn seed_receipt_history(user: &UserId, room: &RoomId, event: &str) {
     let newer = data::next_sn().await.unwrap();
     for sn in [newer, older] {
         row.sn = sn;
-        diesel::insert_into(event_receipts::table)
+        diesel::insert_into(data::schema::event_receipts::table)
             .values(&row)
             .execute(&mut data::db())
             .await
