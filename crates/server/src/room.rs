@@ -718,7 +718,11 @@ pub async fn get_power_levels(room_id: &RoomId) -> AppResult<RoomPowerLevels> {
     let version_rules = crate::room::get_version_rules(&room_version)?;
     let creators = create.creators()?;
 
-    let content = get_power_levels_event_content(room_id).await?;
+    let content = match get_power_levels_event_content(room_id).await {
+        Ok(content) => Some(content),
+        Err(error) if error.is_not_found() => None,
+        Err(error) => return Err(error),
+    };
     let power_levels = RoomPowerLevels::new(content.into(), &version_rules.authorization, creators);
     Ok(power_levels)
 }

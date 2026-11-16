@@ -18,6 +18,8 @@ pub fn router() -> Router {
                             .get(get_room)
                             .push(Router::with_path("hierarchy").get(get_hierarchy))
                             .push(Router::with_path("members").get(get_room_members))
+                            .push(Router::with_path("aliases").get(get_local_aliases))
+                            .push(Router::with_path("make_room_admin").post(make_room_admin))
                             .push(Router::with_path("state").get(get_room_state))
                             .push(Router::with_path("messages").get(get_room_messages))
                             .push(
@@ -388,19 +390,139 @@ pub async fn get_hierarchy(
     json_ok(res_body)
 }
 
+/// List directory mappings, independently of preferred aliases and room membership.
+#[endpoint]
+pub async fn get_local_aliases(room_id: PathParam<OwnedRoomId>) -> JsonResult<JsonValue> {
+    if !room::room_exists(&room_id).await? {
+        return Err(MatrixError::not_found("Room not found").into());
+    }
+    let mut aliases = room::local_aliases_for_room(&room_id).await?;
+    aliases.sort();
+    json_ok(serde_json::json!({"aliases":aliases}))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MakeRoomAdminBody {
+    pub user_id: OwnedUserId,
+}
+
+/// Promote an existing member using a joined local actor with actual room authority.
+/// Server-admin authentication does not bypass Matrix event authorization or invent
+/// an unavailable remote signer. Rooms with no suitable local actor fail explicitly.
+#[endpoint]
+pub async fn make_room_admin(
+    room_id: PathParam<OwnedRoomId>,
+    body: JsonBody<MakeRoomAdminBody>,
+) -> JsonResult<JsonValue> {
+    use crate::core::events::StateEventType;
+    use crate::core::events::room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent};
+    let room_id = room_id.into_inner();
+    let target = &body.user_id;
+    let lock = room::lock_state(&room_id).await;
+    let create = room::get_create(&room_id).await?;
+    let version = create.room_version()?;
+    let rules = room::get_version_rules(&version)?;
+    if !room::user::is_joined(target, &room_id).await? {
+        return Err(MatrixError::invalid_param("Target must already be joined to the room").into());
+    }
+    let event = match room::get_state(&room_id, &StateEventType::RoomPowerLevels, "", None).await {
+        Ok(event) => Some(event),
+        Err(error) if error.is_not_found() => None,
+        Err(error) => return Err(error),
+    };
+    let content = event
+        .as_ref()
+        .map(|event| event.get_content::<RoomPowerLevelsEventContent>())
+        .transpose()?;
+    let powers = RoomPowerLevels::new(content.into(), &rules.authorization, create.creators()?);
+    let required = 100
+        .max(powers.state_default)
+        .max(powers.for_state(StateEventType::RoomPowerLevels));
+    if powers.for_user(target) >= required {
+        return json_ok(serde_json::json!({"user_id":target,"already_admin":true}));
+    }
+    let mut actors = room::local_users_in_room(&room_id).await?;
+    actors.sort_by_key(|actor| std::cmp::Reverse(powers.for_user(actor)));
+    let actor = actors
+        .into_iter()
+        .find(|actor| {
+            powers.for_user(actor) >= required
+                && powers.user_can_change_user_power_level(actor, target)
+        })
+        .ok_or_else(|| {
+            MatrixError::forbidden("No joined local user can grant room administration", None)
+        })?;
+    let mut content: JsonValue = match event {
+        Some(event) => serde_json::from_str(event.content.get())?,
+        None => serde_json::to_value(
+            RoomPowerLevelsEventContent::try_from(powers)
+                .map_err(|_| MatrixError::invalid_param("Invalid room power levels"))?,
+        )?,
+    };
+    if content.get("users").is_none() {
+        content["users"] = serde_json::json!({});
+    }
+    content["users"][target.as_str()] = serde_json::json!(required);
+    let event = room::timeline::build_and_append_pdu(
+        crate::event::PduBuilder {
+            event_type: StateEventType::RoomPowerLevels.to_string().into(),
+            content: serde_json::value::to_raw_value(&content)?,
+            state_key: Some(String::new()),
+            ..Default::default()
+        },
+        &actor,
+        &room_id,
+        &version,
+        &lock,
+    )
+    .await?;
+    json_ok(
+        serde_json::json!({"user_id":target,"power_level":required,"event_id":event.event_id,"sender":actor}),
+    )
+}
+
 /// Get room members
 #[endpoint]
-pub async fn get_room_members(room_id: PathParam<OwnedRoomId>) -> JsonResult<RoomMembersResponse> {
+pub async fn get_room_members(
+    room_id: PathParam<OwnedRoomId>,
+    from: QueryParam<i64, false>,
+    limit: QueryParam<i64, false>,
+) -> JsonResult<RoomMembersResponse> {
+    use diesel::prelude::*;
+    use horme::RunQueryDsl;
+
+    use crate::data::schema::room_users;
+    let offset = from.into_inner().unwrap_or(0);
+    let limit = limit.into_inner();
+    if offset < 0 || limit.is_some_and(|limit| !(1..=1000).contains(&limit)) {
+        return Err(MatrixError::invalid_param(
+            "from must be non-negative and limit must be 1..1000",
+        )
+        .into());
+    }
     let room_id = room_id.into_inner();
 
     if !room::room_exists(&room_id).await? {
         return Err(MatrixError::not_found("Room not found").into());
     }
 
-    let members = room::get_members(&room_id).await?;
-    let total = members.len() as u64;
-    let members: Vec<String> = members.into_iter().map(|u| u.to_string()).collect();
-
+    let total = room_users::table
+        .filter(room_users::room_id.eq(&room_id))
+        .count()
+        .get_result::<i64>(&mut crate::data::db())
+        .await? as u64;
+    let members = room_users::table
+        .filter(room_users::room_id.eq(&room_id))
+        .order((room_users::user_id.asc(), room_users::id.asc()))
+        .offset(offset)
+        .limit(limit.unwrap_or(i64::MAX))
+        .select(room_users::user_id)
+        .load::<OwnedUserId>(&mut crate::data::db())
+        .await?
+        .into_iter()
+        .map(|user| user.to_string())
+        .collect();
     json_ok(RoomMembersResponse { members, total })
 }
 

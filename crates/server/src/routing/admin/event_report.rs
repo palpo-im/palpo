@@ -72,6 +72,8 @@ pub struct EventReportDetailResponse {
     pub score: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_json: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
 }
 
 impl From<data::room::DbEventReport> for EventReportDetailResponse {
@@ -85,7 +87,8 @@ impl From<data::room::DbEventReport> for EventReportDetailResponse {
             user_id: db.user_id.to_string(),
             reason: db.reason,
             score: db.score,
-            event_json: db.content,
+            event_json: None,
+            sender: None,
         }
     }
 }
@@ -187,7 +190,29 @@ pub async fn get_event_report(report_id: PathParam<i64>) -> JsonResult<EventRepo
         .await?
         .ok_or_else(|| MatrixError::not_found(format!("Event report {} not found", report_id)))?;
 
-    json_ok(report.into())
+    json_ok(report_details(report).await?)
+}
+
+/// Report content is the reporter's reason/score, never the reported event.
+async fn report_details(
+    report: data::room::DbEventReport,
+) -> crate::AppResult<EventReportDetailResponse> {
+    let event = match crate::room::timeline::get_pdu(&report.event_id).await {
+        Ok(event) => Some(event.pdu),
+        Err(error) if error.is_not_found() => None,
+        Err(error) => return Err(error),
+    };
+    let mut response = EventReportDetailResponse::from(report);
+    if let Some(event) = event {
+        if event.room_id.as_str() != response.room_id {
+            return Err(crate::AppError::internal("Reported event room mismatch"));
+        }
+        response.sender = Some(event.sender.to_string());
+        response.event_json = Some(serde_json::to_value(
+            event.to_room_event_without_transaction_id(),
+        )?);
+    }
+    Ok(response)
 }
 
 /// PUT /_synapse/admin/v1/event_reports/{report_id}
@@ -208,7 +233,7 @@ pub async fn update_event_report_status(
         .await?
         .ok_or_else(|| MatrixError::not_found(format!("Event report {} not found", report_id)))?;
 
-    json_ok(report.into())
+    json_ok(report_details(report).await?)
 }
 
 /// DELETE /_synapse/admin/v1/event_reports/{report_id}

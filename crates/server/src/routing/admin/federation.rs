@@ -65,14 +65,46 @@ pub struct DestinationRoom {
 pub async fn list_destinations(
     from: QueryParam<i64, false>,
     limit: QueryParam<i64, false>,
-    _destination: QueryParam<String, false>,
-    _order_by: QueryParam<String, false>,
-    _dir: QueryParam<String, false>,
+    destination: QueryParam<String, false>,
+    order_by: QueryParam<String, false>,
+    dir: QueryParam<String, false>,
 ) -> JsonResult<DestinationsListResponse> {
     let offset = from.into_inner().unwrap_or(0);
     let limit = limit.into_inner().unwrap_or(100);
 
-    let servers = data::sending::get_all_destinations().await?;
+    if offset < 0 || !(1..=1000).contains(&limit) {
+        return Err(MatrixError::invalid_param(
+            "from must be non-negative and limit must be 1..1000",
+        )
+        .into());
+    }
+    let order_by = order_by
+        .into_inner()
+        .unwrap_or_else(|| "destination".into());
+    if !matches!(
+        order_by.as_str(),
+        "destination"
+            | "retry_last_ts"
+            | "retry_interval"
+            | "failure_ts"
+            | "last_successful_stream_ordering"
+    ) {
+        return Err(MatrixError::invalid_param("unsupported destination order_by").into());
+    }
+    let descending = match dir.into_inner().as_deref().unwrap_or("f") {
+        "f" => false,
+        "b" => true,
+        _ => return Err(MatrixError::invalid_param("dir must be f or b").into()),
+    };
+    let needle = destination.into_inner().unwrap_or_default().to_lowercase();
+    let mut servers = data::sending::get_all_destinations().await?;
+    servers.retain(|server| server.as_str().to_lowercase().contains(&needle));
+    // Retry telemetry is currently absent. All its null/zero values tie, so use
+    // destination as a deterministic secondary key for every supported ordering.
+    servers.sort();
+    if descending {
+        servers.reverse();
+    }
     let total = servers.len() as i64;
 
     let destinations: Vec<DestinationInfo> = servers

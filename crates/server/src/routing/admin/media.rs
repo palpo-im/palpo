@@ -110,6 +110,12 @@ pub struct DeleteMediaByDateSizeQuery {
     pub before_ts: i64,
     #[serde(default)]
     pub size_gt: Option<i64>,
+    /// Keep retained profile/avatar references, including historical room avatars.
+    #[serde(default = "keep_profiles_default")]
+    pub keep_profiles: bool,
+}
+fn keep_profiles_default() -> bool {
+    true
 }
 
 /// GET /_synapse/admin/v1/media/{server_name}/{media_id}
@@ -164,6 +170,9 @@ pub async fn delete_media_by_date_size(
     let before_ts = query.before_ts;
     let size_gt = query.size_gt.unwrap_or(0);
 
+    if size_gt < 0 {
+        return Err(MatrixError::invalid_param("size_gt must be non-negative").into());
+    }
     if before_ts < 30000000000 {
         return Err(MatrixError::invalid_param(
             "Query parameter before_ts you provided is from the year 1970. \
@@ -174,7 +183,8 @@ pub async fn delete_media_by_date_size(
 
     let local_server = &config::get().server_name;
     let (deleted_media, total) =
-        crate::media::delete_old_local_media(local_server, before_ts, size_gt).await?;
+        crate::media::delete_old_local_media(local_server, before_ts, size_gt, query.keep_profiles)
+            .await?;
 
     json_ok(DeleteMediaResponse {
         deleted_media,
