@@ -4649,7 +4649,7 @@ dependencies = [
 [[package]]
 name = "rav1e"
 version = "0.8.1"
-source = "git+https://github.com/chrislearn/rav1e?rev=b1af6dfed0c7d413700cc81eb7d194b764295451#b1af6dfed0c7d413700cc81eb7d194b764295451"
+source = "git+https://github.com/chrislearn/rav1e?rev=d2deddc58fdbbb30aafbc550836454910de91af9#d2deddc58fdbbb30aafbc550836454910de91af9"
 dependencies = [
  "aligned-vec",
  "arbitrary",
