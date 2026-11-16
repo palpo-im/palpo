@@ -215,8 +215,16 @@ async fn filtered_batch() {
     assert!(response.rooms.join.is_empty());
     let queries = spy.snapshot();
     assert!(
-        !queries.iter().any(|q| q.contains("event_receipts")),
-        "empty ephemeral section fetched receipts"
+        !queries
+            .iter()
+            .any(|q| q.contains("event_receipts") && q.contains("json_data")),
+        "empty ephemeral section fetched receipt payloads"
+    );
+    assert!(
+        queries
+            .iter()
+            .any(|q| q.contains("event_receipts") && !q.contains("json_data")),
+        "empty ephemeral section suppressed independent notification read progress"
     );
     assert!(
         !queries.iter().any(|q| q.contains("room_typings")),
