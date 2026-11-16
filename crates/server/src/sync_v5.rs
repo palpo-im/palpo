@@ -976,14 +976,14 @@ async fn sync_events_at_position(
         crate::user::get_push_rules(sender_id).await?;
     }
 
-    #[cfg(feature = "unstable-msc4262")]
+    #[cfg(all(feature = "unstable-msc4262", not(feature = "unstable-msc4480")))]
     let curr_sn =
         data::user::curr_sn_after_presence_profile_and_inbox_writes(sender_id, device_id).await?;
-    #[cfg(not(feature = "unstable-msc4262"))]
+    #[cfg(not(any(feature = "unstable-msc4262", feature = "unstable-msc4480")))]
     let curr_sn = data::user::curr_sn_after_presence_writes(Some((sender_id, device_id))).await?;
-    crate::seqnum_reach(curr_sn).await;
     #[cfg(feature = "unstable-msc4480")]
     let curr_sn = crate::event::sticky::curr_sn_after_sync_writes(sender_id, device_id).await?;
+    crate::seqnum_reach(curr_sn).await;
 
     let invite_snapshot =
         crate::membership::invited_rooms_for_sync(sender_id, 0, device_id, curr_sn).await?;

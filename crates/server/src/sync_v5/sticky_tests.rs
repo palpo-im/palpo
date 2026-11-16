@@ -100,6 +100,7 @@ async fn run() {
             .unwrap();
     }
     let service = Service::new(crate::routing::root());
+    profile_and_sticky_snapshot_share_one_fence().await;
     let created = ok(
         &service,
         TestClient::post("http://localhost/_matrix/client/v3/createRoom")
@@ -347,4 +348,50 @@ async fn run() {
         )
         .is_empty()
     );
+}
+
+async fn profile_and_sticky_snapshot_share_one_fence() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let ready = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let position = Arc::new(AtomicI64::new(0));
+    let (writer_ready, writer_release, writer_position) =
+        (ready.clone(), release.clone(), position.clone());
+    let writer = tokio::spawn(async move {
+        data::connect()
+            .transaction::<_, crate::AppError, _>(async |conn| {
+                diesel::sql_query("SELECT pg_advisory_xact_lock(1346426200)")
+                    .execute(conn)
+                    .await?;
+                let sn =
+                    diesel::dsl::sql::<diesel::sql_types::BigInt>("SELECT nextval('occur_sn_seq')")
+                        .get_result::<i64>(conn)
+                        .await?;
+                writer_position.store(sn, Ordering::SeqCst);
+                writer_ready.notify_one();
+                writer_release.notified().await;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    });
+    ready.notified().await;
+    let mut snapshot = tokio::spawn(async {
+        crate::event::sticky::curr_sn_after_sync_writes(
+            UserId::parse("@alice:sticky.example").unwrap().as_ref(),
+            "D".into(),
+        )
+        .await
+        .unwrap()
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut snapshot)
+            .await
+            .is_err(),
+        "snapshot skipped an in-flight profile publication"
+    );
+    release.notify_one();
+    writer.await.unwrap();
+    assert!(snapshot.await.unwrap() >= position.load(Ordering::SeqCst));
 }
