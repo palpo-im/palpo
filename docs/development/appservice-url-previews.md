@@ -20,7 +20,9 @@ namespaces:
 
 Patterns match from the start of the URL, like other AS namespaces. Providers
 are tried in configured order, with at most four unique IDs. Disabled services
-are excluded. Unconfigured services receive no requests. `send_user_id` defaults
+are excluded. An invalid preview regex is logged by service ID and ignored for
+that provider; other providers and local previews remain available. Unconfigured
+services receive no requests. `send_user_id` defaults
 to false; enabling it discloses the authenticated requester only to that matching
 provider. Trust the service with both the URL (including its query) and, when
 enabled, that user's identity.

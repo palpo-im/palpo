@@ -135,10 +135,15 @@ pub(super) async fn preview(url: &Url, user: &UserId) -> AppResult<Option<Value>
         if let Some(info) = registrations.get(&provider.id) {
             // Preview patterns affect only explicitly enabled preview providers;
             // adding an unused namespace must not disable ordinary AS behavior.
-            let namespace = crate::appservice::NamespaceRegex::try_from(
+            let namespace = match crate::appservice::NamespaceRegex::try_from(
                 info.registration.namespaces.preview_urls.clone(),
-            )
-            .map_err(|_| crate::AppError::internal("Invalid preview provider namespace"))?;
+            ) {
+                Ok(namespace) => namespace,
+                Err(_) => {
+                    warn!(appservice_id = %provider.id, "Ignoring invalid application-service preview namespace");
+                    continue;
+                }
+            };
             if namespace.is_match(url.as_str()) {
                 providers.push((provider, info, namespace));
             }

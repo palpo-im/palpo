@@ -12,6 +12,9 @@ const HOST: &str = "https://93.184.216.34";
 const TARGET: &str = "https://93.184.216.34/normal/private?token=private&x=1";
 const EXCLUSIVE: &str = "https://93.184.216.34/exclusive/private";
 const PATH: &str = "/bridge/_matrix/app/unstable/uk.half-shot.msc4417/preview_url";
+const NORMAL_PATTERN: &str = r"https://93\.184\.216\.34/normal";
+const FIRST_PATTERN: &str =
+    r"https://93\.184\.216\.34/normal|https?://(blocked\.example|localhost|127\.0\.0\.1)/";
 
 #[derive(Clone)]
 enum Reply {
@@ -165,6 +168,18 @@ async fn cached(url: &str) {
     .await
     .unwrap();
 }
+async fn set_namespace(id: &str, pattern: &str) {
+    use diesel::sql_types::{Jsonb, Text};
+    use horme::RunQueryDsl;
+    diesel::sql_query("UPDATE appservice_registrations SET namespaces=$2 WHERE id=$1")
+        .bind::<Text, _>(id)
+        .bind::<Jsonb, _>(
+            json!({"uk.half-shot.msc4417.preview_urls":[{"regex":pattern,"exclusive":false}]}),
+        )
+        .execute(&mut data::db())
+        .await
+        .unwrap();
+}
 async fn request(service: &Service, url: &str, token: &str) -> (StatusCode, Value) {
     let mut endpoint = Url::parse("http://localhost/_matrix/client/v1/media/preview_url").unwrap();
     endpoint.query_pairs_mut().append_pair("url", url);
@@ -200,86 +215,191 @@ fn review_appservice_previews_disabled_uses_local_cache() {
     run(false);
 }
 fn run(enabled: bool) {
-    std::thread::Builder::new().stack_size(16*1024*1024).spawn(move || {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-            let service = setup(enabled).await;
-            let first = register("first",r"https://93\.184\.216\.34/normal|https?://(blocked\.example|localhost|127\.0\.0\.1)/",false).await;
-            let second = register("second",r"https://93\.184\.216\.34/normal",false).await;
-            let exclusive = register("exclusive",r"https://93\.184\.216\.34/exclusive",true).await;
-            let last = register("last",r"https://93\.184\.216\.34/exclusive",false).await;
-            let unrelated = register("unconfigured",r".*",false).await;
-            cached(TARGET).await;
-            if !enabled {
-                title(&service,TARGET,"alice","public cache").await;
-                assert_eq!(first.count()+second.count()+exclusive.count()+last.count()+unrelated.count(),0);
-                return;
-            }
-            // A matching configured provider takes precedence over the local cache.
-            title(&service,TARGET,"alice","anonymous").await;
-            assert_eq!(second.count(),0);
-            first.set(Reply::Failure);
-            for user in ["alice","bob","alice"] {
-                title(&service,TARGET,user,&format!("@{user}:preview.example")).await;
-            }
-            assert_eq!(second.count(),3,"delegated private previews entered a shared cache");
-            assert_eq!(data::media::get_url_preview(TARGET).await.unwrap().og_title.as_deref(),Some("public cache"));
-            for invalid in [Reply::Json(Value::Null),Reply::Json(json!({})),Reply::Text("not JSON".into()),
-                Reply::Json(json!({"og:image":"https://untrusted.example/private"})),
-                Reply::Json(json!({"og:image":"mxc://invalid"})),
-                Reply::Json(json!({"og:title":{"nested":"invalid"}})),
-                Reply::Json(json!({"og:title":123})),
-                Reply::Json(json!({"og:image:width":-1})),
-                Reply::Json(json!({"og:title":"x".repeat(2048)})),
-                Reply::Redirect(last.origin.clone()),Reply::Timeout] {
-                first.set(invalid);
-                title(&service,TARGET,"alice","@alice:preview.example").await;
-            }
-            assert_eq!(last.count(),0,"redirect forwarded private URL or credentials");
-            first.set(Reply::Failure);
-            second.set(Reply::Failure);
-            title(&service,TARGET,"alice","public cache").await;
-            let unmatched = format!("{HOST}/unmatched");
-            cached(&unmatched).await;
-            let before = first.count()+second.count();
-            title(&service,&unmatched,"alice","public cache").await;
-            assert_eq!(first.count()+second.count(),before);
-            // Exclusive failures and empty results never try another provider or local cache.
-            cached(EXCLUSIVE).await;
-            exclusive.set(Reply::Failure);
-            assert_eq!(request(&service,EXCLUSIVE,"alice").await.0,StatusCode::INTERNAL_SERVER_ERROR);
-            exclusive.set(Reply::Json(Value::Null));
-            assert_eq!(request(&service,EXCLUSIVE,"alice").await,(StatusCode::OK,json!({})));
-            exclusive.set(Reply::Personal);
-            title(&service,EXCLUSIVE,"alice","@alice:preview.example").await;
-            assert_eq!(last.count(),0);
-            let before = first.count();
-            for denied in ["https://blocked.example/private","http://127.0.0.1/private","http://localhost/private","file:///private"] {
-                assert_eq!(request(&service,denied,"alice").await.0,StatusCode::FORBIDDEN,"{denied}");
-            }
-            assert_eq!(first.count(),before,"denied URL disclosed to appservice");
-            // The actual HTTP route shares the existing bounded preview admission pool.
-            let leases: Vec<_> = (0..MAX_PREVIEW_REQUESTS).map(|i| PREVIEW_REQUESTS.try_enter(&format!("occupied-{i}")).unwrap()).collect();
-            assert_eq!(request(&service,TARGET,"alice").await.0,StatusCode::TOO_MANY_REQUESTS);
-            drop(leases);
-            first.set(Reply::Personal);
-            title(&service,TARGET,"alice","anonymous").await;
-            crate::appservice::set_appservice_disabled("first",true).await.unwrap();
-            crate::appservice::set_appservice_disabled("second",true).await.unwrap();
-            title(&service,TARGET,"alice","public cache").await;
-            crate::appservice::set_appservice_disabled("first",false).await.unwrap();
-            title(&service,TARGET,"alice","anonymous").await;
-            assert_eq!(unrelated.count(),0,"unconfigured provider received private previews");
-            for peer in [&first,&second,&exclusive] {
-                for captured in peer.captured() {
-                    assert_eq!(captured.path,PATH);
-                    assert_eq!(captured.authorization,Some(format!("Bearer {}",peer.token)));
-                    assert!(captured.query.get("url").is_some_and(|url| url==TARGET || url==EXCLUSIVE));
-                    assert!(!captured.query.contains_key("access_token"));
-                    assert!(!captured.query.values().any(|v| v=="alice" || v=="bob"));
-                }
-            }
-            assert!(first.captured().iter().all(|c| !c.query.contains_key("user_id")));
-            assert!(second.captured().iter().all(|c| c.query.contains_key("user_id")));
-        });
-    }).unwrap().join().unwrap();
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let service = setup(enabled).await;
+                    let first = register("first", FIRST_PATTERN, false).await;
+                    let second = register("second", NORMAL_PATTERN, false).await;
+                    let exclusive =
+                        register("exclusive", r"https://93\.184\.216\.34/exclusive", true).await;
+                    let last = register("last", r"https://93\.184\.216\.34/exclusive", false).await;
+                    let unrelated = register("unconfigured", r".*", false).await;
+                    cached(TARGET).await;
+                    if !enabled {
+                        title(&service, TARGET, "alice", "public cache").await;
+                        assert_eq!(
+                            first.count()
+                                + second.count()
+                                + exclusive.count()
+                                + last.count()
+                                + unrelated.count(),
+                            0
+                        );
+                        return;
+                    }
+                    // A matching configured provider takes precedence over the local cache.
+                    title(&service, TARGET, "alice", "anonymous").await;
+                    assert_eq!(second.count(), 0);
+                    first.set(Reply::Failure);
+                    for user in ["alice", "bob", "alice"] {
+                        title(&service, TARGET, user, &format!("@{user}:preview.example")).await;
+                    }
+                    assert_eq!(
+                        second.count(),
+                        3,
+                        "delegated private previews entered a shared cache"
+                    );
+                    assert_eq!(
+                        data::media::get_url_preview(TARGET)
+                            .await
+                            .unwrap()
+                            .og_title
+                            .as_deref(),
+                        Some("public cache")
+                    );
+                    for invalid in [
+                        Reply::Json(Value::Null),
+                        Reply::Json(json!({})),
+                        Reply::Text("not JSON".into()),
+                        Reply::Json(json!({"og:image":"https://untrusted.example/private"})),
+                        Reply::Json(json!({"og:image":"mxc://invalid"})),
+                        Reply::Json(json!({"og:title":{"nested":"invalid"}})),
+                        Reply::Json(json!({"og:title":123})),
+                        Reply::Json(json!({"og:image:width":-1})),
+                        Reply::Json(json!({"og:title":"x".repeat(2048)})),
+                        Reply::Redirect(last.origin.clone()),
+                        Reply::Timeout,
+                    ] {
+                        first.set(invalid);
+                        title(&service, TARGET, "alice", "@alice:preview.example").await;
+                    }
+                    assert_eq!(
+                        last.count(),
+                        0,
+                        "redirect forwarded private URL or credentials"
+                    );
+                    first.set(Reply::Failure);
+                    second.set(Reply::Failure);
+                    title(&service, TARGET, "alice", "public cache").await;
+                    let unmatched = format!("{HOST}/unmatched");
+                    cached(&unmatched).await;
+                    let before = first.count() + second.count();
+                    title(&service, &unmatched, "alice", "public cache").await;
+                    assert_eq!(first.count() + second.count(), before);
+                    // Exclusive failures and empty results never try another provider or local cache.
+                    cached(EXCLUSIVE).await;
+                    exclusive.set(Reply::Failure);
+                    assert_eq!(
+                        request(&service, EXCLUSIVE, "alice").await.0,
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    );
+                    exclusive.set(Reply::Json(Value::Null));
+                    assert_eq!(
+                        request(&service, EXCLUSIVE, "alice").await,
+                        (StatusCode::OK, json!({}))
+                    );
+                    exclusive.set(Reply::Personal);
+                    title(&service, EXCLUSIVE, "alice", "@alice:preview.example").await;
+                    assert_eq!(last.count(), 0);
+                    let before = first.count();
+                    for denied in [
+                        "https://blocked.example/private",
+                        "http://127.0.0.1/private",
+                        "http://localhost/private",
+                        "file:///private",
+                    ] {
+                        assert_eq!(
+                            request(&service, denied, "alice").await.0,
+                            StatusCode::FORBIDDEN,
+                            "{denied}"
+                        );
+                    }
+                    assert_eq!(first.count(), before, "denied URL disclosed to appservice");
+                    // The actual HTTP route shares the existing bounded preview admission pool.
+                    let leases: Vec<_> = (0..MAX_PREVIEW_REQUESTS)
+                        .map(|i| {
+                            PREVIEW_REQUESTS
+                                .try_enter(&format!("occupied-{i}"))
+                                .unwrap()
+                        })
+                        .collect();
+                    assert_eq!(
+                        request(&service, TARGET, "alice").await.0,
+                        StatusCode::TOO_MANY_REQUESTS
+                    );
+                    drop(leases);
+                    first.set(Reply::Personal);
+                    title(&service, TARGET, "alice", "anonymous").await;
+                    crate::appservice::set_appservice_disabled("first", true)
+                        .await
+                        .unwrap();
+                    crate::appservice::set_appservice_disabled("second", true)
+                        .await
+                        .unwrap();
+                    title(&service, TARGET, "alice", "public cache").await;
+                    crate::appservice::set_appservice_disabled("first", false)
+                        .await
+                        .unwrap();
+                    title(&service, TARGET, "alice", "anonymous").await;
+                    // Bad metadata in one configured service must not disable other
+                    // providers, unrelated URLs or the ordinary local fallback.
+                    crate::appservice::set_appservice_disabled("second", false)
+                        .await
+                        .unwrap();
+                    set_namespace("second", "[").await;
+                    title(&service, TARGET, "alice", "anonymous").await;
+                    title(&service, &unmatched, "alice", "public cache").await;
+                    set_namespace("first", "[").await;
+                    set_namespace("second", NORMAL_PATTERN).await;
+                    second.set(Reply::Personal);
+                    title(&service, TARGET, "bob", "@bob:preview.example").await;
+                    set_namespace("second", "[").await;
+                    title(&service, TARGET, "alice", "public cache").await;
+                    set_namespace("first", FIRST_PATTERN).await;
+                    set_namespace("second", NORMAL_PATTERN).await;
+                    assert_eq!(
+                        unrelated.count(),
+                        0,
+                        "unconfigured provider received private previews"
+                    );
+                    for peer in [&first, &second, &exclusive] {
+                        for captured in peer.captured() {
+                            assert_eq!(captured.path, PATH);
+                            assert_eq!(
+                                captured.authorization,
+                                Some(format!("Bearer {}", peer.token))
+                            );
+                            assert!(
+                                captured
+                                    .query
+                                    .get("url")
+                                    .is_some_and(|url| url == TARGET || url == EXCLUSIVE)
+                            );
+                            assert!(!captured.query.contains_key("access_token"));
+                            assert!(!captured.query.values().any(|v| v == "alice" || v == "bob"));
+                        }
+                    }
+                    assert!(
+                        first
+                            .captured()
+                            .iter()
+                            .all(|c| !c.query.contains_key("user_id"))
+                    );
+                    assert!(
+                        second
+                            .captured()
+                            .iter()
+                            .all(|c| c.query.contains_key("user_id"))
+                    );
+                });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
