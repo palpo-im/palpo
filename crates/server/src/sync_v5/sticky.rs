@@ -28,12 +28,13 @@ pub(super) struct Offer {
 }
 
 fn config_key(request: &SyncEventsReqBody) -> Vec<u8> {
-    serde_json::to_vec(&(
+    let config = serde_json::to_vec(&(
         &request.extensions.sticky_events,
         &request.lists,
         &request.room_subscriptions,
     ))
-    .expect("sticky config serializes")
+    .expect("sticky config serializes");
+    crate::utils::hash_keys(std::iter::once(config))
 }
 pub(super) fn configure(state: &mut Delivery, request: &SyncEventsReqBody) {
     let config = config_key(request);
