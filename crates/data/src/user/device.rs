@@ -631,31 +631,45 @@ pub async fn sync_to_device_until(
     if limit == 0 {
         return Err(DataError::public("to-device batch limit must be positive"));
     }
-    let rows = device_inboxes::table
-        .filter(device_inboxes::user_id.eq(user_id))
-        .filter(device_inboxes::device_id.eq(device_id))
-        .filter(device_inboxes::occur_sn.ge(since_sn))
-        .filter(device_inboxes::occur_sn.le(until_sn))
-        .order(device_inboxes::occur_sn.asc())
-        .limit(i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX))
-        .select((device_inboxes::occur_sn, device_inboxes::json_data))
-        .load::<(Seqnum, serde_json::Value)>(&mut crate::db())
-        .await?;
-    let mut bytes = 2usize; // Array delimiters, plus one comma per subsequent item.
-    let mut previous = until_sn;
-    for (count, (position, event)) in rows.into_iter().enumerate() {
-        let event_bytes = serde_json::to_vec(&event)?
-            .len()
-            .saturating_add(usize::from(count > 0));
-        if count >= limit || (count > 0 && bytes.saturating_add(event_bytes) > max_bytes) {
-            return Ok(previous);
-        }
-        // Even a single over-budget event must be delivered, never silently dropped.
-        // Inbox sequence numbers are allocated per delivery, before the fenced snapshot.
-        bytes = bytes.saturating_add(event_bytes);
-        previous = position;
+    #[derive(diesel::QueryableByName)]
+    struct Boundary {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        until_sn: Seqnum,
     }
-    Ok(until_sn)
+    // Compute the prefix in PostgreSQL without loading limit + 1 complete JSON
+    // payloads into the process. A backlog of large messages must not amplify a
+    // small response into hundreds of MiB of intermediate allocations. Stored JSON's
+    // text encoding can retain spaces, so its UTF-8 byte length budgets the
+    // compact JSON written by our inbox producers conservatively. Only the first over-budget
+    // event is exempt, to guarantee progress.
+    let boundary = diesel::sql_query(
+        "WITH RECURSIVE batch(n,last_sn,bytes) AS (
+            SELECT 0::bigint,$4::bigint,2::bigint
+            UNION ALL
+            SELECT b.n+1,i.occur_sn,b.bytes+octet_length(i.json_data::text)::bigint+CASE WHEN b.n>0 THEN 1 ELSE 0 END
+            FROM batch b CROSS JOIN LATERAL (
+                SELECT d.occur_sn,d.json_data
+                FROM device_inboxes d
+                WHERE d.user_id=$1 AND d.device_id=$2 AND d.occur_sn>=$3 AND d.occur_sn<=$4
+                    AND (b.n=0 OR d.occur_sn>b.last_sn)
+                ORDER BY d.occur_sn LIMIT 1
+            ) i
+            WHERE b.n<$5 AND (b.n=0 OR b.bytes+octet_length(i.json_data::text)::bigint+1<=$6)
+        ), last AS (SELECT * FROM batch ORDER BY n DESC LIMIT 1)
+        SELECT CASE WHEN last.n>0 AND EXISTS (
+            SELECT 1 FROM device_inboxes d WHERE d.user_id=$1 AND d.device_id=$2
+                AND d.occur_sn>last.last_sn AND d.occur_sn<=$4
+        ) THEN last.last_sn ELSE $4 END AS until_sn FROM last",
+    )
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(device_id.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(since_sn)
+    .bind::<diesel::sql_types::BigInt, _>(until_sn)
+    .bind::<diesel::sql_types::BigInt, _>(i64::try_from(limit).unwrap_or(i64::MAX))
+    .bind::<diesel::sql_types::BigInt, _>(i64::try_from(max_bytes).unwrap_or(i64::MAX))
+    .get_result::<Boundary>(&mut crate::db())
+    .await?;
+    Ok(boundary.until_sn)
 }
 
 pub async fn get_to_device_events(

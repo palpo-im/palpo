@@ -22,7 +22,9 @@ standard Matrix `/versions` response. Current additions are:
 | `appservice_url_cas` | Existing `PUT /v1/appservices/{id}/url` changes only the callback URL and requires the exact `expected_url`, including explicit null. There is no full registration replacement API; clients must not label this operation as token/namespace editing. |
 
 Classic sync limits to-device delivery to a preferred batch of 100 events and
-512 KiB of serialized event JSON. A single larger event is still delivered so
+512 KiB of event JSON (using the stored text length as a conservative budget).
+The database computes the contiguous delivery boundary without first loading a
+full batch of pending JSON payloads into the application. A single larger event is still delivered so
 that the queue can make progress. The entire shared stream window is capped at
 the last included inbox position: the next since token cannot acknowledge
 messages omitted from this batch. Consumers must allow a single larger message
