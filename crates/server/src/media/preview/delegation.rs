@@ -13,7 +13,8 @@ fn provider_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         // AS addresses are operator-configured and may be internal. No redirect
         // may forward their homeserver token or a user's private preview URL.
-        reqwest::Client::builder()
+        crate::sending::reqwest_client_builder(config::get())
+            .expect("application-service preview transport configuration")
             .redirect(reqwest::redirect::Policy::none())
             .timeout(PROVIDER_TIMEOUT)
             .build()

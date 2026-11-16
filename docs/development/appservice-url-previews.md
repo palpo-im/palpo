@@ -27,7 +27,8 @@ enabled, that user's identity.
 
 Requests use `GET /_matrix/app/unstable/uk.half-shot.msc4417/preview_url`, with
 `url` and optional `user_id` query parameters, and a Bearer homeserver token.
-Tokens are not put in query strings. Redirects are never followed. Operator
+Tokens are not put in query strings. The AS transport keeps configured proxy,
+TLS and connection-pool settings. Redirects are never followed. Operator
 configured service addresses may be internal; the previewed URL still passes
 the normal scheme, domain and CIDR policy, including DNS checks for hostnames.
 The provider remains responsible for protecting its own outbound connections.
