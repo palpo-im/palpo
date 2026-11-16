@@ -1,0 +1,31 @@
+diff --git a/tests/federation_device_list_update_test.go b/tests/federation_device_list_update_test.go
+index 95ba69b..25cc36f 100644
+--- a/tests/federation_device_list_update_test.go
++++ b/tests/federation_device_list_update_test.go
+@@ -165,6 +165,26 @@ func TestDeviceListsUpdateOverFederation(t *testing.T) {
+ 				t, client.SyncReq{TimeoutMillis: "1000", Since: bobSince},
+ 				syncHasDeviceListChange([]string{alice.UserID}, []string{}),
+ 			)
++
++			// A notification alone cannot establish that the remote key cache
++			// recovered. Check the actual new keys after each connectivity mode.
++			res := bob.MustDo(t, "POST", []string{"_matrix", "client", "v3", "keys", "query"}, client.WithJSONBody(t, map[string]any{
++				"device_keys": map[string]any{alice.UserID: []string{alice2.DeviceID}},
++			}))
++			body := must.ParseJSON(t, res.Body)
++			res.Body.Close()
++			if len(body.Get("failures").Map()) != 0 {
++				t.Fatalf("remote key query failed after reconnection: %s", body.Raw)
++			}
++			device := body.Get("device_keys").Map()[alice.UserID].Map()[alice2.DeviceID]
++			if device.Get("user_id").Str != alice.UserID || device.Get("device_id").Str != alice2.DeviceID {
++				t.Fatalf("remote query did not return Alice's new device: %s", body.Raw)
++			}
++			for key, expected := range deviceKeys["keys"].(map[string]interface{}) {
++				if device.Get("keys").Map()[key].Str != expected.(string) {
++					t.Fatalf("remote query returned stale or missing %s: %s", key, body.Raw)
++				}
++			}
+ 		})
+ 	}
+ }

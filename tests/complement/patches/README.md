@@ -5,6 +5,22 @@ These patches apply only to the pinned Complement revision in
 them, then runs the runner unit tests. Do not silently rebase patches when
 updating Complement: review the upstream behavior first.
 
+## device-list-query-keys.patch
+
+The three `TestDeviceListsUpdateOverFederation` connectivity cases already
+require exact device-list notifications after a new device uploads its keys.
+They now also query Alice's new device from Bob's remote homeserver after normal
+connectivity, reconnection and a server stop/restart. The query must have no
+server failures, return the correct user/device IDs, and contain both uploaded
+public keys with their exact values. Map lookups preserve IDs containing dots
+without treating them as JSON path expressions.
+
+This completes the remote-key-content assertion requested by
+[#573](https://github.com/palpo-im/palpo/issues/573). Existing strict notification
+assertions and all three entries in `required_pass/device-list-versions.json`
+remain mandatory. The patch applies to the pinned revision; it strengthens the
+fixture and does not mask a server failure.
+
 ## public-rooms-pagination.patch
 
 `TestRoomState/Parallel/GET_/publicRooms_lists_newly-created_room` creates a
