@@ -130,6 +130,9 @@ jobs:
         timeout-minutes: 40
         run: cargo test --all --all-features --no-fail-fast -- --nocapture
 
+      - name: Isolated sliding sync v4 protocol feature
+        run: cargo test --locked -p palpo-core --no-default-features --features unstable-msc4186 client::sync_events::v4::tests
+
       - name: PostgreSQL regression tests
         env:
           PALPO_TEST_DATABASE_URL: postgres://palpo_test:palpo_test@localhost/palpo_test
