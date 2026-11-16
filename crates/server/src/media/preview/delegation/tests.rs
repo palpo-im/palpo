@@ -292,7 +292,8 @@ fn run(enabled: bool) {
                     let before = first.count() + second.count();
                     title(&service, &unmatched, "alice", "public cache").await;
                     assert_eq!(first.count() + second.count(), before);
-                    // Exclusive failures and empty results never try another provider or local cache.
+                    // Exclusive failures and empty results never try another provider or local
+                    // cache.
                     cached(EXCLUSIVE).await;
                     exclusive.set(Reply::Failure);
                     let (status, body) = request(&service, EXCLUSIVE, "alice").await;
