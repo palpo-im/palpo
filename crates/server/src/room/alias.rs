@@ -383,10 +383,12 @@ async fn remove_alias_inner(
             let mut content: serde_json::Value = serde_json::from_str(event.content.get())?;
             if remove_advertised_alias(&mut content, alias_id.as_str()) {
                 // Directory deletion is permitted independently of room state rights.
+                // A retained power level does not authorize a departed member to send state.
                 // Do not discard unrelated preferred aliases, or publish a fake empty event.
-                let can_update = super::get_power_levels(&room_id)
-                    .await?
-                    .user_can_send_state(&user.id, StateEventType::RoomCanonicalAlias);
+                let can_update = super::user::is_joined(&user.id, &room_id).await?
+                    && super::get_power_levels(&room_id)
+                        .await?
+                        .user_can_send_state(&user.id, StateEventType::RoomCanonicalAlias);
                 if can_update {
                     let room_version = crate::room::get_version(&room_id).await?;
                     timeline::build_and_append_pdu(
