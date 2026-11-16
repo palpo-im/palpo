@@ -195,6 +195,16 @@ pub enum FeatureFlag {
     #[palpo_enum(rename = "org.continuwuity.presence_v2.msc4559")]
     Msc4559,
 
+    /// Stripped-state queries over client and federation APIs ([MSC4560]).
+    ///
+    /// This identifies a peer's advertised capability. Compiling the wire types
+    /// does not enable or advertise a server implementation.
+    ///
+    /// [MSC4560]: https://github.com/matrix-org/matrix-spec-proposals/pull/4560
+    #[cfg(feature = "unstable-msc4560")]
+    #[palpo_enum(rename = "org.continuwuity.msc4560")]
+    Msc4560,
+
     #[doc(hidden)]
     _Custom(PrivOwnedStr),
 }
