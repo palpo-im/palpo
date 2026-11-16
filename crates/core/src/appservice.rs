@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 pub mod event;
+pub mod media;
 pub mod ping;
 pub mod query;
 pub mod third_party;
@@ -48,6 +49,11 @@ pub struct Namespaces {
     /// Events which are sent in rooms with certain room IDs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rooms: Vec<Namespace>,
+
+    /// URL previews this application service can provide (MSC4417).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "uk.half-shot.msc4417.preview_urls")]
+    pub preview_urls: Vec<Namespace>,
 }
 
 impl Namespaces {

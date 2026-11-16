@@ -1197,6 +1197,12 @@
 
 # [url_preview]
 
+# Optional MSC4417 preview providers, tried in this order (at most four).
+# Each service also needs matching uk.half-shot.msc4417.preview_urls namespaces.
+# User identity is omitted unless send_user_id is explicitly true.
+# Delegated results are not cached by Palpo. An exclusive namespace prevents fallback.
+# appservice_providers = [{ id = "github", send_user_id = true }]
+
 # Optional IP address or network interface-name to bind as the source of
 # URL preview requests. If not set, it will not bind to a specific
 # address or interface.

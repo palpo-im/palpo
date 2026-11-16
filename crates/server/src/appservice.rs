@@ -191,7 +191,7 @@ pub async fn update_appservice_url(
     Ok(data::appservice::update_url_if_unchanged(id, expected_url, url).await?)
 }
 
-fn validate_appservice_url(value: &str) -> AppResult<()> {
+pub(crate) fn validate_appservice_url(value: &str) -> AppResult<()> {
     let invalid = || {
         MatrixError::invalid_param(
             "url must be an absolute HTTP(S) URL without userinfo, query, or fragment",

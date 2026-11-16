@@ -1253,7 +1253,7 @@ fn federation_event_with_version(
     to_raw_value(&pdu_json).expect("CanonicalJson is valid serde_json::Value")
 }
 
-fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBuilder> {
+pub(crate) fn reqwest_client_builder(config: &ServerConfig) -> AppResult<reqwest::ClientBuilder> {
     let mut reqwest_client_builder = reqwest::Client::builder()
         .pool_idle_timeout(Some(Duration::from_millis(config.request_idle_timeout)))
         .pool_max_idle_per_host(config.request_idle_per_host.into())
