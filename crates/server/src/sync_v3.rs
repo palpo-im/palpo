@@ -52,12 +52,18 @@ fn room_types_are_empty(filter: &RoomEventFilter) -> bool {
     filter.not_types.iter().any(|ty| ty == "*") || filter.types.as_ref().is_some_and(Vec::is_empty)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RoomPublication {
+    frame_id: i64,
+    sn: Seqnum,
+}
+
 /// Capture per-room publication frames with bounded SQL batches. These bounds
 /// match the scalar lookup; current room tips may be newer than this response.
 async fn captured_sync_frames(
     rooms: &[OwnedRoomId],
     until: Seqnum,
-) -> AppResult<HashMap<OwnedRoomId, i64>> {
+) -> AppResult<HashMap<OwnedRoomId, RoomPublication>> {
     use diesel::prelude::*;
     use horme::RunQueryDsl;
 
@@ -82,15 +88,73 @@ async fn captured_sync_frames(
                 event_points::room_id.asc(),
                 event_points::live_published_sn.desc(),
             ))
-            .select((event_points::room_id, event_points::live_published_frame_id))
-            .load::<(OwnedRoomId, Option<i64>)>(&mut data::db())
+            .select((
+                event_points::room_id,
+                event_points::live_published_frame_id,
+                event_points::live_published_sn,
+            ))
+            .load::<(OwnedRoomId, Option<i64>, Option<Seqnum>)>(&mut data::db())
             .await?;
-        frames.extend(
-            rows.into_iter()
-                .filter_map(|(room, frame)| frame.map(|frame| (room, frame))),
-        );
+        frames.extend(rows.into_iter().filter_map(|(room, frame, sn)| {
+            frame
+                .zip(sn)
+                .map(|(frame_id, sn)| (room, RoomPublication { frame_id, sn }))
+        }));
     }
     Ok(frames)
+}
+
+/// These readers, like the room payload readers, include updates published
+/// after the captured timeline window. Errors must prevent acknowledging it.
+async fn changed_auxiliary_rooms(
+    user_id: &UserId,
+    rooms: &[OwnedRoomId],
+    filter: &RoomDataFilter,
+    since: Seqnum,
+) -> AppResult<HashSet<OwnedRoomId>> {
+    use diesel::prelude::*;
+    use horme::RunQueryDsl;
+
+    use crate::data::schema::{event_receipts, room_typings, user_datas};
+    let mut changed = HashSet::new();
+    for chunk in rooms.chunks(256) {
+        if !room_section_is_empty(&filter.ephemeral) {
+            changed.extend(
+                event_receipts::table
+                    .filter(event_receipts::room_id.eq_any(chunk))
+                    .filter(event_receipts::sn.ge(since))
+                    .filter(event_receipts::ty.ne("m.read.private"))
+                    .select(event_receipts::room_id)
+                    .distinct()
+                    .load::<OwnedRoomId>(&mut data::db())
+                    .await?,
+            );
+            changed.extend(
+                room_typings::table
+                    .filter(room_typings::room_id.eq_any(chunk))
+                    .filter(room_typings::occur_sn.ge(since))
+                    .select(room_typings::room_id)
+                    .distinct()
+                    .load::<OwnedRoomId>(&mut data::db())
+                    .await?,
+            );
+        }
+        if !room_section_is_empty(&filter.account_data) {
+            changed.extend(
+                user_datas::table
+                    .filter(user_datas::user_id.eq(user_id))
+                    .filter(user_datas::room_id.eq_any(chunk))
+                    .filter(user_datas::occur_sn.ge(since))
+                    .select(user_datas::room_id)
+                    .distinct()
+                    .load::<Option<OwnedRoomId>>(&mut data::db())
+                    .await?
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+    }
+    Ok(changed)
 }
 
 fn includes_global_event(
@@ -268,12 +332,19 @@ pub async fn sync_events(
     } else {
         None
     };
-    let empty_sections = room_types_are_empty(&filter.room.timeline)
-        && room_section_is_empty(&filter.room.state)
-        && room_section_is_empty(&filter.room.ephemeral)
-        && room_section_is_empty(&filter.room.account_data)
-        && !filter.room.timeline.unread_thread_notifications;
-    let sticky_rooms = if incremental && empty_sections {
+    let can_skip = incremental && !filter.room.timeline.unread_thread_notifications;
+    let auxiliary_rooms = if can_skip {
+        changed_auxiliary_rooms(
+            sender_id,
+            &visible_rooms,
+            &filter.room,
+            since_tk.expect("incremental token").event_sn(),
+        )
+        .await?
+    } else {
+        HashSet::new()
+    };
+    let sticky_rooms = if can_skip {
         crate::event::sticky::changed_rooms(
             &visible_rooms,
             since_tk.expect("incremental token").event_sn(),
@@ -285,8 +356,9 @@ pub async fn sync_events(
         HashSet::new()
     };
     for room_id in &all_joined_rooms {
-        let frame = frames.get(room_id).copied();
-        let previous = previous_frames.get(room_id).copied();
+        let publication = frames.get(room_id);
+        let frame = publication.map(|p| p.frame_id);
+        let previous = previous_frames.get(room_id).map(|p| p.frame_id);
         let last_read = notification_cursors
             .as_ref()
             .map(|cursors| cursors.get(room_id).copied().unwrap_or_default());
@@ -295,15 +367,18 @@ pub async fn sync_events(
             && frame.is_some()
             && frame == previous
             && (!deliver
-                || (empty_sections
+                || (can_skip
+                    // Even an empty type filter can emit publication-gap metadata.
+                    && publication.is_some_and(|p| p.sn < since_tk.expect("incremental token").event_sn())
+                    && !auxiliary_rooms.contains(room_id)
                     && last_read.is_some_and(|read| {
                         read < since_tk.expect("incremental token").event_sn()
                     })
                     && !sticky_rooms.contains(room_id)))
         {
             // Membership/device/presence deltas are unchanged at these frames.
-            // Receipts and sticky updates were checked in batches; the filtered
-            // sections cannot contribute anything to this room's response.
+            // Room payload streams were checked in batches. Publication frames
+            // also preserve membership changes even for excluded room IDs.
             if deliver {
                 room::lazy_loading::lazy_load_confirm_delivery(
                     sender_id,
@@ -2138,6 +2213,9 @@ mod joined_room_failure_tests {
 #[cfg(test)]
 #[path = "sync_v3/resource_review_tests.rs"]
 mod resource_review_tests;
+
+#[cfg(test)]
+mod activity_review_tests;
 
 #[cfg(test)]
 mod protocol_contract_tests;

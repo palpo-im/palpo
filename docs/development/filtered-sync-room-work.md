@@ -1,9 +1,9 @@
-# Incremental sync work for filtered rooms
+# Incremental sync room activity
 
-Incremental v3 sync captures current and previous room frames in batches. When
-all four room sections exclude every event type, an unchanged frame needs no
-per-room loader if there is no fresh receipt/notification update or deliverable
-sticky event. Receipt watermarks and sticky candidate rooms are read in batches
+Incremental v3 sync captures current and previous room frames and live
+publication positions in batches. An unchanged frame needs no per-room loader
+when there is no newer live publication, receipt/notification update, typing,
+room account data or deliverable sticky event. Candidate rooms are read in batches
 of at most 256 room IDs. A transactional projection stores one receipt watermark
 per user/room; sync never aggregates the append-only history. The migration
 installs its insert trigger before backfilling existing rows, and `GREATEST`
@@ -27,7 +27,7 @@ Receipt writers take their notification-summary locks before the publication
 fence. A snapshot waiting for one device's inbox therefore cannot hold the
 receipt fence and block another device's independent snapshot.
 
-The isolated regression exercises the loader bypass, unchanged/changed frames,
+The isolated regressions exercise the loader bypass, unchanged/changed frames,
 full-state fallback, sticky delivery, current and older-event receipts, another
 user's receipt, bounded queries for over 1,000 IDs and database-error recovery.
 With 30,000 historical receipts, the actual query plan reads only the small
@@ -35,10 +35,24 @@ projection. Out-of-order inserts cannot regress its watermark.
 An actual PostgreSQL lock waiter proves that snapshots wait for both committed
 and rolled-back publications.
 
-This addresses the fully event-filtered bridge path in
-[#650](https://github.com/palpo-im/palpo/issues/650) and batches notification
-watermarks for ordinary incremental syncs. The issue remains open for a general
-activity prefilter for clients requesting room payloads. That prefilter must
-account for live publications, account data, public/private receipts, typing
-expiry and sticky delivery, while preserving independent membership/device
-streams; a timeline-only room index would miss updates.
+The same activity prefilter serves ordinary clients and fully filtered bridges
+in [#650](https://github.com/palpo-im/palpo/issues/650). Even a zero timeline limit
+or an empty event-type filter can carry gap metadata, so a new live publication
+always retains the room loader. Frame changes retain membership/device/presence
+work independently of room exclusions. Skipped visible rooms still confirm lazy
+member delivery for the acknowledged position.
+
+Public receipt and typing candidates use recent publication windows with
+supporting indexes; room account data reuses the existing `(user_id, occur_sn)`
+index. Another user's private receipts do not contribute, while the caller's
+private read progress is covered by its notification watermark. Account-data
+deletion tombstones and typing expiry publications count as activity. Candidate
+reads retain the same unbounded upper position as their auxiliary payload
+readers; a later write can cause harmless extra work, but cannot conceal an
+update in the captured window. Empty sections skip their candidate queries.
+Failures abort the response so the caller can retry the same position.
+
+This removes sequential room payload loads for quiet rooms, rather than making
+the whole sync constant-time: joined-room enumeration, captured frame batches
+and independent user/device/presence streams still run. Initial sync, full-state
+requests, peeks and requested per-thread notification maps remain full paths.

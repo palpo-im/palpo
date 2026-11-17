@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::*;
 
-async fn request(builder: RequestBuilder, service: &Service) -> Value {
+pub(super) async fn request(builder: RequestBuilder, service: &Service) -> Value {
     let router = service.router();
     let mut response = tokio::spawn(async move { builder.send(router).await })
         .await
@@ -32,7 +32,7 @@ fn review_filtered_room_skips_payloads_and_keeps_independent_membership() {
         .join()
         .unwrap();
 }
-async fn setup() -> (Service, OwnedRoomId, OwnedUserId, OwnedUserId) {
+pub(super) async fn setup() -> (Service, OwnedRoomId, OwnedUserId, OwnedUserId) {
     crate::test_database::init();
     config::CONFIG.set(serde_json::from_value(json!({"server_name":"filtered.example", "db":{"url":"unused"},"auto_join_rooms":[]})).unwrap()).unwrap();
     for name in ["alice", "bob"] {
@@ -188,7 +188,13 @@ async fn filtered_batch() {
     spy.reset();
     let batched = captured_sync_frames(&rooms, until).await.unwrap();
     let batch_queries = spy.snapshot().len();
-    assert_eq!(batched, scalar);
+    assert_eq!(
+        batched
+            .iter()
+            .map(|(room, p)| (room.clone(), p.frame_id))
+            .collect::<HashMap<_, _>>(),
+        scalar
+    );
     assert!(
         batch_queries < scalar_queries,
         "scalar={scalar_queries} batch={batch_queries}"
