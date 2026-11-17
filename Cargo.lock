@@ -3717,7 +3717,7 @@ dependencies = [
 
 [[package]]
 name = "palpo"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3814,7 +3814,7 @@ dependencies = [
 
 [[package]]
 name = "palpo-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -3881,7 +3881,7 @@ dependencies = [
 
 [[package]]
 name = "palpo-core-macros"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -3895,7 +3895,7 @@ dependencies = [
 
 [[package]]
 name = "palpo-data"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3965,14 +3965,14 @@ dependencies = [
 
 [[package]]
 name = "palpo-identifiers-validation"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "palpo-operations"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "chrono",
@@ -3992,7 +3992,7 @@ dependencies = [
 
 [[package]]
 name = "palpo-server-macros"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",
