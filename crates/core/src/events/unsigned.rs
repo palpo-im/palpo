@@ -41,6 +41,7 @@ pub struct MessageLikeUnsigned<C: MessageLikeEventContent> {
     #[cfg(feature = "unstable-msc4354")]
     #[serde(rename = "msc4354_sticky_duration_ttl_ms", default)]
     #[serde(with = "crate::serde::duration::opt_ms")]
+    #[salvo(schema(value_type = Option<u64>))]
     pub sticky_duration_ttl_ms: Option<Duration>,
 }
 
@@ -113,6 +114,7 @@ pub struct StateUnsigned<C: PossiblyRedactedStateEventContent> {
     #[cfg(feature = "unstable-msc4354")]
     #[serde(rename = "msc4354_sticky_duration_ttl_ms", default)]
     #[serde(with = "crate::serde::duration::opt_ms")]
+    #[salvo(schema(value_type = Option<u64>))]
     pub sticky_duration_ttl_ms: Option<Duration>,
 }
 

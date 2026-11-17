@@ -146,6 +146,7 @@ pub struct RegisterResBody {
         skip_serializing_if = "Option::is_none",
         rename = "expires_in_ms"
     )]
+    #[salvo(schema(value_type = Option<u64>))]
     pub expires_in: Option<Duration>,
 }
 

@@ -49,6 +49,8 @@ fn service() -> Service {
 async fn client_ids_decode_once_without_changing_route_segments_or_signed_uri() {
     let service = service();
     for (encoded, expected) in [
+        ("@alice:example.org", "@alice:example.org"),
+        ("%40alice%3Aexample.org", "@alice:example.org"),
         ("%40a%2Fb%3Aexample.org", "@a/b:example.org"),
         ("@a%2fb:example.org", "@a/b:example.org"),
         ("%40a%252Fb%3aexample.org", "@a%2Fb:example.org"),

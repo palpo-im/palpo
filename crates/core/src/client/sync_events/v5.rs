@@ -83,7 +83,7 @@ pub struct SyncEventsReqArgs {
     pub pos: Option<String>,
 
     /// The maximum time to poll before responding to this request.
-    #[salvo(parameter(parameter_in = Query))]
+    #[salvo(parameter(parameter_in = Query, value_type = Option<u64>))]
     #[serde(with = "opt_ms", default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<Duration>,
 }

@@ -230,7 +230,7 @@ pub struct ThumbnailReqArgs {
     /// uploaded.
     ///
     /// The default value is 20 seconds.
-    #[salvo(parameter(parameter_in = Query))]
+    #[salvo(parameter(parameter_in = Query, value_type = u64))]
     #[serde(
         with = "crate::serde::duration::ms",
         default = "crate::client::media::default_download_timeout",

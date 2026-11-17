@@ -92,6 +92,7 @@ impl VoiceEventContent {
 pub struct VoiceAudioDetailsContentBlock {
     /// The duration of the audio in seconds.
     #[serde(with = "palpo_core::serde::duration::secs")]
+    #[salvo(schema(value_type = u64))]
     pub duration: Duration,
 
     /// The waveform representation of the content.

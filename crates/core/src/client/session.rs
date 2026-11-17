@@ -76,6 +76,7 @@ pub struct RefreshTokenResBody {
         default,
         skip_serializing_if = "Option::is_none"
     )]
+    #[salvo(schema(value_type = Option<u64>))]
     pub expires_in_ms: Option<Duration>,
 }
 impl RefreshTokenResBody {
@@ -177,6 +178,7 @@ pub struct LoginResBody {
         skip_serializing_if = "Option::is_none",
         rename = "expires_in_ms"
     )]
+    #[salvo(schema(value_type = Option<u64>))]
     pub expires_in: Option<Duration>,
 }
 impl LoginResBody {
@@ -788,6 +790,7 @@ pub struct TokenResBody {
     ///
     /// 2 minutes is recommended as a default.
     #[serde(with = "crate::serde::duration::ms", rename = "expires_in_ms")]
+    #[salvo(schema(value_type = u64))]
     pub expires_in: Duration,
 
     /// The login token for the `m.login.token` login flow.

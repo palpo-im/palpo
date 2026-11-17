@@ -78,6 +78,7 @@ pub struct PresenceResBody {
         default,
         skip_serializing_if = "Option::is_none"
     )]
+    #[salvo(schema(value_type = Option<u64>))]
     pub last_active_ago: Option<Duration>,
 
     /// The user's presence state.

@@ -44,6 +44,7 @@ crate::json_body_modifier!(SendPingReqBody);
 #[derive(ToSchema, Serialize, Default, Debug)]
 pub struct SendPingResBody {
     #[serde(with = "crate::serde::duration::ms", rename = "duration_ms")]
+    #[salvo(schema(value_type = u64))]
     pub duration: Duration,
 }
 

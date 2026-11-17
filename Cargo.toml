@@ -105,10 +105,10 @@ regex-automata = "0.4"
 reqwest = { version = "0.13.4", features = ["json", "form"] }
 ring = "0.17.14"
 # Matrix identifiers may contain encoded slashes within one path segment.
-# Salvo 1.1.2 rejects those before routing; keep both the facade and actual
-# router core pinned until the path encoding contract passes on an upgrade.
-salvo = { version = "=1.0.1", features = ["rustls"]}
-salvo_core = { version = "=1.0.1", default-features = false }
+# Keep the facade and actual router core on the same exact version. Upgrades
+# must pass crates/server/tests/path_encoding_contract.rs before merging.
+salvo = { version = "=1.2.1", features = ["rustls"]}
+salvo_core = { version = "=1.2.1", default-features = false }
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"

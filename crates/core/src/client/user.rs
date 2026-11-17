@@ -45,6 +45,7 @@ pub struct RequstOpenidTokenResBody {
 
     /// Seconds until token expiration.
     #[serde(with = "crate::serde::duration::secs")]
+    #[salvo(schema(value_type = u64))]
     pub expires_in: Duration,
 }
 impl RequstOpenidTokenResBody {

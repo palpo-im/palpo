@@ -52,6 +52,7 @@ pub struct ClaimKeysReqBody {
         default,
         skip_serializing_if = "Option::is_none"
     )]
+    #[salvo(schema(value_type = Option<u64>))]
     pub timeout: Option<Duration>,
 
     /// The keys to be claimed.
