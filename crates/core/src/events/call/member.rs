@@ -263,6 +263,7 @@ pub struct Membership {
     /// The time a member has joined is defined as:
     /// `MIN(content.created_ts, event.origin_server_ts)`
     #[serde(with = "palpo_core::serde::duration::ms")]
+    #[salvo(schema(value_type = u64))]
     pub expires: Duration,
 
     /// Stores a copy of the `origin_server_ts` of the initial session event.

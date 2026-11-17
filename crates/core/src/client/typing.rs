@@ -63,6 +63,7 @@ impl From<TypingInfo> for Typing {
 #[non_exhaustive]
 pub struct TypingInfo {
     /// The length of time to mark this user as typing.
+    #[salvo(schema(value_type = u64))]
     pub timeout: Duration,
 }
 

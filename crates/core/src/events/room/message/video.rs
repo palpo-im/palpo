@@ -68,6 +68,7 @@ pub struct VideoInfo {
         default,
         skip_serializing_if = "Option::is_none"
     )]
+    #[salvo(schema(value_type = Option<u64>))]
     pub duration: Option<Duration>,
 
     /// The height of the video in pixels.

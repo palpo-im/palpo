@@ -93,6 +93,7 @@ pub struct AudioInfo {
         default,
         skip_serializing_if = "Option::is_none"
     )]
+    #[salvo(schema(value_type = Option<u64>))]
     pub duration: Option<Duration>,
 
     /// The mimetype of the audio, e.g. "audio/aac".
@@ -122,6 +123,7 @@ pub struct UnstableAudioDetailsContentBlock {
     /// Note that the MSC says this should be in seconds but for compatibility
     /// with the Element clients, this uses milliseconds.
     #[serde(with = "palpo_core::serde::duration::ms")]
+    #[salvo(schema(value_type = u64))]
     pub duration: Duration,
 
     /// The waveform representation of the audio content, if any.

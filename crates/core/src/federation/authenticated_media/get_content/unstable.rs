@@ -18,7 +18,7 @@ pub struct GetMediaContentArgs {
     /// case that the content has not yet been uploaded.
     ///
     /// The default value is 20 seconds.
-    #[salvo(parameter(parameter_in = Query))]
+    #[salvo(parameter(parameter_in = Query, value_type = u64))]
     #[serde(
         with = "crate::serde::duration::ms",
         default = "crate::media::default_download_timeout",

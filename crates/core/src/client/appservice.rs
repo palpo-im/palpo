@@ -47,6 +47,7 @@ pub struct PingResBody {
     /// The duration in milliseconds that the `POST /_matrix/app/v1/ping`
     /// request took from the homeserver's point of view.
     #[serde(with = "crate::serde::duration::ms", rename = "duration_ms")]
+    #[salvo(schema(value_type = u64))]
     pub duration: Duration,
 }
 impl PingResBody {

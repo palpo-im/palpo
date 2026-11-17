@@ -35,6 +35,7 @@ pub struct BeaconInfoEventContent {
     ///
     /// Meaning that the location will stop being shared at `ts + timeout`.
     #[serde(default, with = "crate::serde::duration::ms")]
+    #[salvo(schema(value_type = u64))]
     pub timeout: Duration,
 
     /// The asset that this message refers to.

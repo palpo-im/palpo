@@ -62,7 +62,7 @@ pub struct SyncEventsReqArgs {
     pub set_presence: PresenceState,
 
     /// The maximum time to poll in milliseconds before returning this request.
-    #[salvo(parameter(parameter_in = Query))]
+    #[salvo(parameter(parameter_in = Query, value_type = Option<u64>))]
     #[serde(
         with = "crate::serde::duration::opt_ms",
         default,

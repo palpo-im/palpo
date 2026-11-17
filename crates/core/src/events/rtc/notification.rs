@@ -30,6 +30,7 @@ pub struct RtcNotificationEventContent {
 
     /// Relative time from `sender_ts` during which the notification is considered valid.
     #[serde(with = "crate::serde::duration::ms")]
+    #[salvo(schema(value_type = u64))]
     pub lifetime: Duration,
 
     /// Intentional mentions determining who should be notified.

@@ -34,6 +34,7 @@ pub struct TurnServerResBody {
 
     /// The time-to-live in seconds.
     #[serde(with = "palpo_core::serde::duration::secs")]
+    #[salvo(schema(value_type = u64))]
     pub ttl: Duration,
 }
 

@@ -40,15 +40,19 @@ See [profile propagation](development/profile-propagation.md).
 
 ## Salvo routing compatibility
 
-Salvo and its routing core remain pinned to 1.0.1. Salvo 1.1.2 rejects encoded
-slashes before matching routes, but Matrix permits `/` in user ID localparts
-and requires those characters to be encoded inside URL parameters. For example,
-`@a/b:example.org` must remain one parameter when sent as `@a%2Fb:example.org`.
-The explicit core constraint prevents a facade-only pin from silently resolving
-a newer incompatible router. Run `cargo test -p palpo --test path_encoding_contract`
-before changing either constraint. An upgrade must preserve segment boundaries,
-decode parameters once, and leave the original request URI intact for federation
-signature verification. No URI rewriting workaround is installed.
+Salvo and its routing core are pinned to 1.2.1, which restores encoded separators
+inside individual route parameters and permits URL colons on Windows. Matrix
+permits `/` in user ID localparts: `@a/b:example.org` must remain one parameter
+when sent as `@a%2Fb:example.org`. The original request URI remains intact for
+federation signature verification; no URI rewriting workaround is installed.
+
+Keep the facade and core constraints aligned, and run
+`cargo test --locked -p palpo --test path_encoding_contract` before upgrading
+either. The tests require preserved segment boundaries and single decoding.
+OpenAPI duration declarations now explicitly describe their existing integer
+milliseconds or seconds representation. Application-service third-party lookups
+extract custom fields from individual query parameters, such as
+`?network=libera&channel=%23matrix`, rather than a JSON-encoded `fields` parameter.
 
 ## Commit safe account data and key backups
 
