@@ -26,7 +26,7 @@ use crate::sending::{SendRequest, SendResult};
 // };
 
 pub fn send_ping_request(dest: &str, body: SendPingReqBody) -> SendResult<SendRequest> {
-    let url = Url::parse(dest)?;
+    let url = Url::parse(&format!("{dest}/_matrix/app/v1/ping"))?;
     crate::sending::post(url).stuff(body)
 }
 
