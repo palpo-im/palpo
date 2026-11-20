@@ -23,6 +23,8 @@ use crate::room::{self, filter_rooms, state};
 use crate::sync_v3::{DEFAULT_BUMP_TYPES, TimelineData};
 use crate::{AppResult, data, extract_variant};
 
+#[cfg(test)]
+mod invitation_tests;
 #[cfg(feature = "unstable-msc4559")]
 mod presence;
 #[cfg(feature = "unstable-msc4262")]
@@ -1268,6 +1270,18 @@ async fn sync_events_at_position(
     )
     .await?;
     res_body.rooms = rooms;
+    forget_invited_rooms(
+        sender_id,
+        device_id,
+        &req_body.conn_id,
+        res_body
+            .rooms
+            .iter()
+            .filter(|(_, room)| room.invite_state.is_some())
+            .map(|(room_id, _)| room_id.clone())
+            .collect(),
+    )
+    .await;
     #[cfg(feature = "unstable-msc4480")]
     sticky::render(sync_info, &sticky_offer, &mut res_body).await?;
 
@@ -1666,15 +1680,25 @@ async fn process_rooms(
             continue;
         }
         let mut timestamp: Option<_> = None;
-        let mut invite_state = None;
-        let is_initial = *room_since_sn == 0
-            || !known_rooms
-                .values()
-                .any(|rooms| rooms.contains_key(room_id));
+        // The invitations were read when this request began, and the user may have joined
+        // the room since. A joined room must not go out as an invitation: a client takes
+        // invite state for the room's membership and would hold the room as invited again.
+        // Never reload the invitation by room ID: that could render a different event.
+        let invite_state = match invite_snapshot.rooms.get(room_id) {
+            Some(state) if !crate::room::user::is_joined(sender_id, room_id).await? => {
+                Some(state.clone())
+            }
+            _ => None,
+        };
+        // A room this connection does not know as a joined room -- among them one it held as
+        // an invitation until now -- is sent as a new room, with its full state: only the
+        // user's own join event in the room state tells a client that it joined.
+        let is_new = !known_rooms
+            .values()
+            .any(|rooms| rooms.contains_key(room_id));
+        let is_initial = *room_since_sn == 0 || is_new;
 
-        let timeline = if let Some(state) = invite_snapshot.rooms.get(room_id) {
-            // Never reload by room ID: that could render a different invitation event.
-            invite_state = Some(state.clone());
+        let timeline = if invite_state.is_some() {
             TimelineData {
                 events: Default::default(),
                 limited: false,
@@ -1775,6 +1799,12 @@ async fn process_rooms(
         let mut candidates = BTreeMap::new();
         let mut full_state = None;
         let mut lazy_senders_collected = false;
+        // An invited user is sent the invitation's stripped state only, not the room's state.
+        let required_state: Vec<_> = if invite_state.is_none() {
+            required_state.iter().collect()
+        } else {
+            Vec::new()
+        };
         for (event_type, key) in required_state {
             let pdus: Vec<_> = match key.as_str() {
                 "$LAZY" if *event_type == StateEventType::RoomMember => {
@@ -1849,11 +1879,12 @@ async fn process_rooms(
                 .entry(ty.clone())
                 .or_default()
                 .insert(key.clone(), pdu.event_sn);
-            if acknowledged
-                .get(room_id)
-                .and_then(|types| types.get(&ty))
-                .and_then(|keys| keys.get(&key))
-                == Some(&pdu.event_sn)
+            if !is_new
+                && acknowledged
+                    .get(room_id)
+                    .and_then(|types| types.get(&ty))
+                    .and_then(|keys| keys.get(&key))
+                    == Some(&pdu.event_sn)
             {
                 continue;
             }
@@ -1865,7 +1896,7 @@ async fn process_rooms(
                 .insert(key, pdu.event_sn);
             required_state.push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
         }
-        if *room_since_sn != 0
+        if !is_initial
             && timeline.events.is_empty()
             && invite_state.is_none()
             && receipt_size == 0
@@ -2415,6 +2446,27 @@ pub async fn update_sync_known_rooms(
         let list = cached.known_rooms.entry(list_id.clone()).or_default();
         for room_id in &new_cached_rooms {
             list.insert(room_id.clone(), since_sn);
+        }
+    })
+    .await;
+}
+
+/// Records that a response carried `invited_rooms` as invitations. A client holds such a
+/// room as an invitation, not as a joined room, so the rooms leave every list's known rooms:
+/// once the user joins one, it goes out as a new room with its full state, whose own join
+/// event is the only thing that tells the client the invitation became a membership.
+async fn forget_invited_rooms(
+    user_id: &UserId,
+    device_id: &DeviceId,
+    conn_id: &Option<String>,
+    invited_rooms: BTreeSet<OwnedRoomId>,
+) {
+    if invited_rooms.is_empty() {
+        return;
+    }
+    update_connection(user_id, device_id, conn_id, |cached| {
+        for rooms in cached.known_rooms.values_mut() {
+            rooms.retain(|room_id, _| !invited_rooms.contains(room_id));
         }
     })
     .await;
