@@ -5,12 +5,15 @@ use crate::PrivOwnedStr;
 
 /// Errors in the `WWW-Authenticate` header.
 ///
-/// To construct this use `::from_str()`. To get its serialized form, use its
-/// `TryInto<http::HeaderValue>` implementation.
+/// Use `::from_str()` to parse a challenge and `TryInto<http::HeaderValue>`
+/// to serialize it.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AuthenticateError {
+    /// The bearer token is expired, revoked, malformed, or otherwise invalid.
+    InvalidToken,
+
     /// insufficient_scope
     ///
     /// Encountered when authentication is handled by OpenID Connect and the
@@ -66,6 +69,8 @@ impl AuthenticateError {
                     AuthenticateError::InsufficientScope {
                         scope: scope.to_owned(),
                     }
+                } else if errcode == "invalid_token" && attrs.is_empty() {
+                    AuthenticateError::InvalidToken
                 } else {
                     AuthenticateError::_Custom {
                         errcode: PrivOwnedStr(errcode.into()),
@@ -86,6 +91,11 @@ impl TryFrom<&AuthenticateError> for http::HeaderValue {
 
     fn try_from(error: &AuthenticateError) -> Result<Self, Self::Error> {
         let s = match error {
+            AuthenticateError::InvalidToken => {
+                return Ok(http::HeaderValue::from_static(
+                    "Bearer error=\"invalid_token\"",
+                ));
+            }
             AuthenticateError::InsufficientScope { scope } => {
                 format!("Bearer error=\"insufficient_scope\", scope=\"{scope}\"")
             }

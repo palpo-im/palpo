@@ -52,6 +52,7 @@ fn introspection(token: &str) -> Value {
         "no-username" => {
             response.as_object_mut().unwrap().remove("username");
         }
+        "expired-api" => response["exp"] = json!(1),
         #[cfg(feature = "unstable-msc4363")]
         "fresh" | "stale" | "future" | "missing-evidence" | "weak" | "expired"
         | "fresh-ordinary" => {
@@ -131,9 +132,26 @@ async fn mock_introspection() -> (String, tokio::task::JoinHandle<()>) {
                 let form =
                     url::form_urlencoded::parse(&bytes[body_start..body_start + content_length]);
                 let token = form.into_owned().find(|(key, _)| key == "token").unwrap().1;
-                let body = introspection(&token).to_string();
+                if matches!(token.as_str(), "slow-headers" | "slow-body") {
+                    if token == "slow-body" {
+                        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n").await.unwrap();
+                    }
+                    // Reap this connection when the client times out and closes it.
+                    let _ = socket.read(&mut [0]).await;
+                    return;
+                }
+                let (status, body) = match token.as_str() {
+                    "invalid-json" => ("200 OK", "{".to_owned()),
+                    "issuer-401" => ("401 Unauthorized", String::new()),
+                    "issuer-429" => ("429 Too Many Requests", String::new()),
+                    "issuer-500" => ("500 Internal Server Error", String::new()),
+                    "issuer-501" => ("501 Not Implemented", String::new()),
+                    "issuer-503" => ("503 Service Unavailable", String::new()),
+                    "issuer-504" => ("504 Gateway Timeout", String::new()),
+                    _ => ("200 OK", introspection(&token).to_string()),
+                };
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 socket.write_all(reply.as_bytes()).await.unwrap();
@@ -239,6 +257,16 @@ async fn assert_error(mut response: Response, status: StatusCode, code: &str, ch
     );
 }
 
+async fn assert_invalid_token(mut response: Response) {
+    assert_eq!(response.status_code, Some(StatusCode::UNAUTHORIZED));
+    assert_eq!(
+        response.headers().get("WWW-Authenticate").unwrap(),
+        "Bearer error=\"invalid_token\""
+    );
+    let body = response.take_json::<Value>().await.unwrap();
+    assert_eq!(body["errcode"], "M_UNKNOWN_TOKEN");
+}
+
 #[tokio::test]
 #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run this test alone"]
 async fn oauth_admin_routes() {
@@ -246,7 +274,7 @@ async fn oauth_admin_routes() {
     let (endpoint, mock) = mock_introspection().await;
     config::CONFIG.set(serde_json::from_value(json!({
         "server_name": "scope.example", "db": {"url": "unused-test-config"},
-        "ip_range_denylist": [], "admin": {"mas_secret": "fixture-secret"},
+        "ip_range_denylist": [], "admin": {"mas_secret": "fixture-secret"}, "request_timeout": 1000,
         "delegated_auth": {"enable": true, "introspection_endpoint": endpoint, "introspection_cache_ttl": 0}
     })).unwrap()).unwrap();
     provision("admin", true).await;
@@ -421,8 +449,29 @@ async fn oauth_admin_routes() {
         false,
     )
     .await;
+    for (token, status) in [
+        ("slow-headers", StatusCode::GATEWAY_TIMEOUT),
+        ("slow-body", StatusCode::GATEWAY_TIMEOUT),
+        ("invalid-json", StatusCode::BAD_GATEWAY),
+        ("issuer-401", StatusCode::BAD_GATEWAY),
+        ("issuer-429", StatusCode::SERVICE_UNAVAILABLE),
+        ("issuer-500", StatusCode::BAD_GATEWAY),
+        ("issuer-501", StatusCode::BAD_GATEWAY),
+        ("issuer-503", StatusCode::SERVICE_UNAVAILABLE),
+        ("issuer-504", StatusCode::GATEWAY_TIMEOUT),
+    ] {
+        assert_error(
+            get(&service, whoami, token).await,
+            status,
+            "M_UNKNOWN",
+            false,
+        )
+        .await;
+    }
+    for token in ["inactive", "expired-api"] {
+        assert_invalid_token(get(&service, whoami, token).await).await;
+    }
     for token in [
-        "inactive",
         "malformed",
         "conflicting",
         "mismatched",
@@ -576,13 +625,7 @@ async fn oauth_step_up_routes() {
     assert_eq!(response.status_code, Some(StatusCode::OK));
     let target = UserId::parse("@target:scope.example").unwrap();
     assert!(data::user::get_user(&target).await.unwrap().is_locked());
-    assert_error(
-        get(&service, path, "expired").await,
-        StatusCode::UNAUTHORIZED,
-        "M_UNKNOWN_TOKEN",
-        false,
-    )
-    .await;
+    assert_invalid_token(get(&service, path, "expired").await).await;
     assert_error(
         get(&service, path, "fresh-ordinary").await,
         StatusCode::FORBIDDEN,

@@ -2,6 +2,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use lru_cache::LruCache;
+use reqwest::StatusCode;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -56,6 +57,14 @@ fn token_cache_key(token: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn issuer_error(request_id: uuid::Uuid, status: StatusCode) -> MatrixError {
+    let mut error = MatrixError::unknown(format!(
+        "Authentication service unavailable (request {request_id})"
+    ));
+    error.status_code = Some(status);
+    error
+}
+
 pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
     introspect_token_with_cache(token, true).await
 }
@@ -104,26 +113,48 @@ pub(super) async fn introspect_token_with_cache(
         .as_ref()
         .ok_or_else(|| MatrixError::unknown("admin.mas_secret not configured"))?;
 
+    let request_id = uuid::Uuid::new_v4();
     let client = sending::default_client();
     let response = client
         .post(&introspection_url)
+        .header("x-request-id", request_id.to_string())
         .bearer_auth(mas_secret)
         .form(&[("token", token)])
         .send()
         .await
-        .map_err(|e| {
-            tracing::error!("Introspection request failed: {e}");
-            MatrixError::unknown("Authentication service unavailable")
+        .map_err(|error| {
+            let timed_out = error.is_timeout();
+            tracing::error!(%request_id, timed_out, "Introspection request failed");
+            let status = if timed_out {
+                StatusCode::GATEWAY_TIMEOUT
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            issuer_error(request_id, status)
         })?;
 
     if !response.status().is_success() {
-        tracing::error!("Introspection returned status: {}", response.status());
-        return Err(MatrixError::unknown("Authentication service error").into());
+        let status = response.status();
+        tracing::error!(%request_id, %status, "Introspection returned an error");
+        let status = match status {
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            StatusCode::GATEWAY_TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
+            _ => StatusCode::BAD_GATEWAY,
+        };
+        return Err(issuer_error(request_id, status).into());
     }
 
-    let mut result: IntrospectionResult = response.json().await.map_err(|e| {
-        tracing::error!("Failed to parse introspection response: {e}");
-        MatrixError::unknown("Invalid introspection response")
+    let mut result: IntrospectionResult = response.json().await.map_err(|error| {
+        let timed_out = error.is_timeout();
+        tracing::error!(%request_id, timed_out, "Could not read introspection response");
+        let status = if timed_out {
+            StatusCode::GATEWAY_TIMEOUT
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        issuer_error(request_id, status)
     })?;
     if !result.is_unexpired() {
         result.active = false;
@@ -206,6 +237,29 @@ pub fn has_matrix_api_scope(scope: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn issuer_failure_renders_matrix_error_with_request_id() {
+        use salvo::Scribe;
+        use salvo::test::ResponseExt;
+        let id = uuid::Uuid::new_v4();
+        for status in [
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            let e = super::issuer_error(id, status);
+            let mut response = salvo::Response::new();
+            e.render(&mut response);
+            assert_eq!(response.status_code, Some(status));
+            let json: serde_json::Value = response.take_json().await.unwrap();
+            assert_eq!(json["errcode"], "M_UNKNOWN");
+            assert_eq!(
+                json["error"],
+                format!("Authentication service unavailable (request {id})")
+            );
+        }
+    }
 
     #[test]
     fn cached_introspection_may_not_outlive_token_expiry() {

@@ -8,6 +8,7 @@ use salvo::http::headers::HeaderMapExt;
 use salvo::http::headers::authorization::Authorization;
 use salvo::prelude::*;
 
+use crate::core::error::AuthenticateError;
 use crate::core::federation::authentication::XMatrix;
 use crate::core::identifiers::*;
 use crate::core::serde::CanonicalJsonValue;
@@ -73,7 +74,7 @@ impl AccessTokenPolicy {
                 // and assurance challenges are a separate policy.
                 let mut error = MatrixError::forbidden(
                     "Token has no server administration scope",
-                    Some(crate::core::error::AuthenticateError::InsufficientScope {
+                    Some(AuthenticateError::InsufficientScope {
                         scope: ADMIN_SCOPE.to_owned(),
                     }),
                 );
@@ -274,7 +275,9 @@ async fn auth_by_delegated_token(
     let result = super::introspection::introspect_token_with_cache(token, use_cache).await?;
 
     if !result.active {
-        return Err(MatrixError::unknown_token("Token is not active", true).into());
+        let mut error = MatrixError::unknown_token("Token is not active", true);
+        error.authenticate = Some(AuthenticateError::InvalidToken);
+        return Err(error.into());
     }
 
     let scopes = result
