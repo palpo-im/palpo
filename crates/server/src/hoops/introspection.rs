@@ -2,6 +2,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use lru_cache::LruCache;
+use reqwest::StatusCode;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -56,17 +57,11 @@ fn token_cache_key(token: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn issuer_error(request_id: uuid::Uuid, status: Option<reqwest::StatusCode>) -> MatrixError {
-    let temporary =
-        status.is_none_or(|s| s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS);
+fn issuer_error(request_id: uuid::Uuid, status: StatusCode) -> MatrixError {
     let mut error = MatrixError::unknown(format!(
         "Authentication service unavailable (request {request_id})"
     ));
-    error.status_code = Some(if temporary {
-        reqwest::StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        reqwest::StatusCode::BAD_GATEWAY
-    });
+    error.status_code = Some(status);
     error
 }
 
@@ -127,20 +122,39 @@ pub(super) async fn introspect_token_with_cache(
         .form(&[("token", token)])
         .send()
         .await
-        .map_err(|_| {
-            tracing::error!(%request_id, "Introspection request failed");
-            issuer_error(request_id, None)
+        .map_err(|error| {
+            let timed_out = error.is_timeout();
+            tracing::error!(%request_id, timed_out, "Introspection request failed");
+            let status = if timed_out {
+                StatusCode::GATEWAY_TIMEOUT
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            issuer_error(request_id, status)
         })?;
 
     if !response.status().is_success() {
         let status = response.status();
         tracing::error!(%request_id, %status, "Introspection returned an error");
-        return Err(issuer_error(request_id, Some(status)).into());
+        let status = match status {
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            StatusCode::GATEWAY_TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
+            _ => StatusCode::BAD_GATEWAY,
+        };
+        return Err(issuer_error(request_id, status).into());
     }
 
-    let mut result: IntrospectionResult = response.json().await.map_err(|_| {
-        tracing::error!(%request_id, "Invalid introspection response");
-        issuer_error(request_id, Some(reqwest::StatusCode::OK))
+    let mut result: IntrospectionResult = response.json().await.map_err(|error| {
+        let timed_out = error.is_timeout();
+        tracing::error!(%request_id, timed_out, "Could not read introspection response");
+        let status = if timed_out {
+            StatusCode::GATEWAY_TIMEOUT
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        issuer_error(request_id, status)
     })?;
     if !result.is_unexpired() {
         result.active = false;
@@ -225,21 +239,18 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn issuer_failure_preserves_status_and_trace_without_disclosing_credentials() {
-        use reqwest::StatusCode as S;
+    async fn issuer_failure_renders_matrix_error_with_request_id() {
         use salvo::{Scribe, test::ResponseExt};
         let id = uuid::Uuid::new_v4();
-        for (upstream, downstream) in [
-            (None, S::SERVICE_UNAVAILABLE),
-            (Some(S::INTERNAL_SERVER_ERROR), S::SERVICE_UNAVAILABLE),
-            (Some(S::TOO_MANY_REQUESTS), S::SERVICE_UNAVAILABLE),
-            (Some(S::UNAUTHORIZED), S::BAD_GATEWAY),
-            (Some(S::OK), S::BAD_GATEWAY),
+        for status in [
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
         ] {
-            let e = super::issuer_error(id, upstream);
+            let e = super::issuer_error(id, status);
             let mut response = salvo::Response::new();
             e.render(&mut response);
-            assert_eq!(response.status_code, Some(downstream));
+            assert_eq!(response.status_code, Some(status));
             let json: serde_json::Value = response.take_json().await.unwrap();
             assert_eq!(json["errcode"], "M_UNKNOWN");
             assert_eq!(
