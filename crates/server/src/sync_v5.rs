@@ -13,7 +13,9 @@ use crate::core::client::sync_events::v5::*;
 use crate::core::client::sync_events::{self};
 use crate::core::events::direct::DirectEventContent;
 use crate::core::events::receipt::{SyncReceiptEvent, combine_receipt_event_contents};
-use crate::core::events::{AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType};
+use crate::core::events::{
+    AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType, TimelineEventType,
+};
 use crate::core::identifiers::*;
 use crate::core::{Seqnum, UnixMillis};
 use crate::data::schema::*;
@@ -25,6 +27,8 @@ use crate::{AppResult, data, extract_variant};
 
 #[cfg(test)]
 mod invitation_tests;
+#[cfg(test)]
+mod lazy_member_tests;
 #[cfg(feature = "unstable-msc4559")]
 mod presence;
 #[cfg(feature = "unstable-msc4262")]
@@ -1812,21 +1816,28 @@ async fn process_rooms(
                         continue;
                     }
                     lazy_senders_collected = true;
-                    let senders: BTreeSet<_> = timeline
-                        .events
-                        .values()
-                        .map(|pdu| pdu.sender.clone())
-                        .collect();
+                    // The users the timeline names: its senders, and the targets of its
+                    // membership events. An invite, kick or ban by another user changes the
+                    // target's membership, which reaches the client only as state.
+                    let mut users = BTreeSet::new();
+                    for pdu in timeline.events.values() {
+                        users.insert(pdu.sender.clone());
+                        if pdu.event_ty == TimelineEventType::RoomMember
+                            && let Some(Ok(target)) = pdu.state_key.as_deref().map(UserId::parse)
+                        {
+                            users.insert(target);
+                        }
+                    }
                     #[cfg(feature = "unstable-msc4480")]
-                    let senders = {
-                        let mut all = senders;
+                    let users = {
+                        let mut all = users;
                         if let Some(senders_in_sticky) = sticky_offer.senders.get(room_id) {
                             all.extend(senders_in_sticky.iter().cloned());
                         }
                         all
                     };
                     let mut members = Vec::new();
-                    for sender in senders
+                    for user in users
                         .into_iter()
                         .take(if cfg!(feature = "unstable-msc4480") {
                             200
@@ -1835,7 +1846,7 @@ async fn process_rooms(
                         })
                     {
                         if let Ok(pdu) =
-                            room::get_state(room_id, event_type, sender.as_str(), None).await
+                            room::get_state(room_id, event_type, user.as_str(), None).await
                         {
                             members.push(pdu);
                         }
