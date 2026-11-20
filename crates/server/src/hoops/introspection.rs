@@ -56,6 +56,20 @@ fn token_cache_key(token: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn issuer_error(request_id: uuid::Uuid, status: Option<reqwest::StatusCode>) -> MatrixError {
+    let temporary =
+        status.is_none_or(|s| s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS);
+    let mut error = MatrixError::unknown(format!(
+        "Authentication service unavailable (request {request_id})"
+    ));
+    error.status_code = Some(if temporary {
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        reqwest::StatusCode::BAD_GATEWAY
+    });
+    error
+}
+
 pub async fn introspect_token(token: &str) -> AppResult<IntrospectionResult> {
     introspect_token_with_cache(token, true).await
 }
@@ -104,26 +118,29 @@ pub(super) async fn introspect_token_with_cache(
         .as_ref()
         .ok_or_else(|| MatrixError::unknown("admin.mas_secret not configured"))?;
 
+    let request_id = uuid::Uuid::new_v4();
     let client = sending::default_client();
     let response = client
         .post(&introspection_url)
+        .header("x-request-id", request_id.to_string())
         .bearer_auth(mas_secret)
         .form(&[("token", token)])
         .send()
         .await
-        .map_err(|e| {
-            tracing::error!("Introspection request failed: {e}");
-            MatrixError::unknown("Authentication service unavailable")
+        .map_err(|_| {
+            tracing::error!(%request_id, "Introspection request failed");
+            issuer_error(request_id, None)
         })?;
 
     if !response.status().is_success() {
-        tracing::error!("Introspection returned status: {}", response.status());
-        return Err(MatrixError::unknown("Authentication service error").into());
+        let status = response.status();
+        tracing::error!(%request_id, %status, "Introspection returned an error");
+        return Err(issuer_error(request_id, Some(status)).into());
     }
 
-    let mut result: IntrospectionResult = response.json().await.map_err(|e| {
-        tracing::error!("Failed to parse introspection response: {e}");
-        MatrixError::unknown("Invalid introspection response")
+    let mut result: IntrospectionResult = response.json().await.map_err(|_| {
+        tracing::error!(%request_id, "Invalid introspection response");
+        issuer_error(request_id, Some(reqwest::StatusCode::OK))
     })?;
     if !result.is_unexpired() {
         result.active = false;
@@ -206,6 +223,31 @@ pub fn has_matrix_api_scope(scope: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn issuer_failure_preserves_status_and_trace_without_disclosing_credentials() {
+        use reqwest::StatusCode as S;
+        use salvo::{Scribe, test::ResponseExt};
+        let id = uuid::Uuid::new_v4();
+        for (upstream, downstream) in [
+            (None, S::SERVICE_UNAVAILABLE),
+            (Some(S::INTERNAL_SERVER_ERROR), S::SERVICE_UNAVAILABLE),
+            (Some(S::TOO_MANY_REQUESTS), S::SERVICE_UNAVAILABLE),
+            (Some(S::UNAUTHORIZED), S::BAD_GATEWAY),
+            (Some(S::OK), S::BAD_GATEWAY),
+        ] {
+            let e = super::issuer_error(id, upstream);
+            let mut response = salvo::Response::new();
+            e.render(&mut response);
+            assert_eq!(response.status_code, Some(downstream));
+            let json: serde_json::Value = response.take_json().await.unwrap();
+            assert_eq!(json["errcode"], "M_UNKNOWN");
+            assert_eq!(
+                json["error"],
+                format!("Authentication service unavailable (request {id})")
+            );
+        }
+    }
 
     #[test]
     fn cached_introspection_may_not_outlive_token_expiry() {
