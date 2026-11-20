@@ -240,7 +240,8 @@ mod tests {
 
     #[tokio::test]
     async fn issuer_failure_renders_matrix_error_with_request_id() {
-        use salvo::{Scribe, test::ResponseExt};
+        use salvo::Scribe;
+        use salvo::test::ResponseExt;
         let id = uuid::Uuid::new_v4();
         for status in [
             StatusCode::BAD_GATEWAY,
