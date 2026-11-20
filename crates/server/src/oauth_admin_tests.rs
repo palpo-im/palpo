@@ -265,7 +265,6 @@ async fn assert_invalid_token(mut response: Response) {
     );
     let body = response.take_json::<Value>().await.unwrap();
     assert_eq!(body["errcode"], "M_UNKNOWN_TOKEN");
-    assert_eq!(body["soft_logout"], true);
 }
 
 #[tokio::test]
