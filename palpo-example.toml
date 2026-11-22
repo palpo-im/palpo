@@ -389,6 +389,24 @@
 #
 # block_non_admin_invites = false
 
+# The largest number of other members that an invitation names. With
+# the default of 0, the stripped state of an invitation holds the
+# inviter's membership and the invited user's, and no one else's.
+#
+# With a larger value, an invitation of one of this server's users also
+# holds the `m.room.member` events of the room's joined and invited
+# members as they are when the invitation is sent: joined members
+# first, then invited ones, each from the earliest. A client can then
+# show who is in the room before the user accepts.
+#
+# Everyone who is invited learns those members' user IDs, names and
+# avatars, whether they join or not. The events are kept with the
+# invitation and sent with it, so the value also bounds its size.
+#
+# Knocks and invitations of users on other servers are not changed.
+#
+# invite_state_member_limit = 0
+
 # Set this to true to allow your server's public room directory to be
 # federated. Set this to false to protect against /publicRooms spiders,
 # but will forbid external users from viewing your server's public room

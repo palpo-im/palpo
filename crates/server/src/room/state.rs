@@ -387,6 +387,54 @@ pub async fn summary_stripped(event: &PduEvent) -> AppResult<Vec<RawJson<AnyStri
     Ok(state)
 }
 
+/// The stripped state kept with `event`, an invitation of one of this server's users.
+///
+/// It is the summary of [`summary_stripped`]. A server whose `invite_state_member_limit` is
+/// above zero adds the room's other members, so that a client can show who is in the room
+/// before the user accepts.
+pub async fn invitation_stripped(
+    event: &PduEvent,
+) -> AppResult<Vec<RawJson<AnyStrippedStateEvent>>> {
+    invitation_stripped_with(event, crate::config::get().invite_state_member_limit).await
+}
+
+/// [`invitation_stripped`] with at most `member_limit` other members: the joined ones and then
+/// the invited ones, each from the earliest membership. The invitation stays the last event.
+pub(crate) async fn invitation_stripped_with(
+    event: &PduEvent,
+    member_limit: usize,
+) -> AppResult<Vec<RawJson<AnyStrippedStateEvent>>> {
+    let mut state = summary_stripped(event).await?;
+    let Some(invited) = event.state_key.as_deref() else {
+        return Ok(state);
+    };
+    if member_limit == 0 {
+        return Ok(state);
+    }
+    // The summary holds the inviter's membership, and the invitation is the invited user's.
+    let member_ids = room_users::table
+        .filter(room_users::room_id.eq(&event.room_id))
+        .filter(room_users::membership.eq_any(["join", "invite"]))
+        .filter(room_users::user_id.ne_all([event.sender.as_str(), invited]))
+        // "join" sorts after "invite".
+        .order_by((room_users::membership.desc(), room_users::event_sn.asc()))
+        .limit(i64::try_from(member_limit).unwrap_or(i64::MAX))
+        .select(room_users::event_id)
+        .load::<OwnedEventId>(&mut crate::data::db())
+        .await?;
+    let invitation = state.pop();
+    for member in timeline::get_pdus(&member_ids).await? {
+        if member.room_id == event.room_id
+            && member.event_ty == TimelineEventType::RoomMember
+            && member.state_key.is_some()
+        {
+            state.push(member.to_stripped_state_event().await);
+        }
+    }
+    state.extend(invitation);
+    Ok(state)
+}
+
 /// Build the room-state summary used by federation invites.
 ///
 /// Matrix v1.16 requires every entry to be a full PDU in the room version's
