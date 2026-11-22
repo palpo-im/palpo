@@ -1,6 +1,9 @@
 //! A room the client holds as an invitation goes out as a new joined room once the user
 //! joins it, with the user's own join event in its state, and never with invite state after
 //! the join. Invited users get the invitation's stripped state only.
+//!
+//! An invitation names the room's other members when the server is configured to, up to
+//! `invite_state_member_limit` of them.
 
 use salvo::prelude::*;
 use salvo::test::{RequestBuilder, ResponseExt, TestClient};
@@ -309,4 +312,293 @@ async fn invitation_accepted_during_the_request() {
     let room = serde_json::to_value(&rooms[&room_id]).unwrap();
     assert_joined_in_full(&room, &invitee);
     assert_eq!(room["initial"], json!(true), "{room}");
+}
+
+/// The `m.room.member` events of stripped state: whom each is about, and their membership.
+fn members(state: &Value) -> Vec<(String, String)> {
+    state
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["type"] == "m.room.member")
+        .map(|event| {
+            // A stripped event is its type, state key, sender and content.
+            assert_eq!(event.as_object().unwrap().len(), 4, "{event}");
+            (
+                event["state_key"].as_str().unwrap().to_owned(),
+                event["content"]["membership"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn membership(user_id: &UserId, membership: &str) -> (String, String) {
+    (user_id.to_string(), membership.to_owned())
+}
+
+/// `inviter` invites `user_id` to the room, who accepts when a token is given for them.
+async fn add(
+    service: &Service,
+    inviter: &str,
+    room_id: &RoomId,
+    user_id: &UserId,
+    accept_with: Option<&str>,
+) {
+    client_api(
+        service,
+        inviter,
+        &format!("rooms/{room_id}/invite"),
+        json!({"user_id": user_id}),
+    )
+    .await;
+    if let Some(token) = accept_with {
+        client_api(service, token, &format!("rooms/{room_id}/join"), json!({})).await;
+    }
+}
+
+const NAMED_INVITER: &str = "sliding-invitation-named-inviter";
+const NAMED_FIRST: &str = "sliding-invitation-named-first";
+const NAMED_SECOND: &str = "sliding-invitation-named-second";
+const NAMED_GONE: &str = "sliding-invitation-named-gone";
+const NAMED_PENDING: &str = "sliding-invitation-named-pending";
+const NAMED_INVITEE: &str = "sliding-invitation-named-invitee";
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+fn database_an_invitation_names_other_members_up_to_a_limit() {
+    run_database_test("invitation-members", invitation_members);
+}
+
+async fn invitation_members() {
+    configure();
+    let inviter = create_user("invitation-named-inviter", NAMED_INVITER).await;
+    let first = create_user("invitation-named-first", NAMED_FIRST).await;
+    let second = create_user("invitation-named-second", NAMED_SECOND).await;
+    let gone = create_user("invitation-named-gone", NAMED_GONE).await;
+    let pending = create_user("invitation-named-pending", NAMED_PENDING).await;
+    let invitee = create_user("invitation-named-invitee", NAMED_INVITEE).await;
+    let service = Service::new(crate::routing::root());
+
+    // `first` joins. `pending` is invited and does not answer. After that invitation `second`
+    // joins, and `gone` joins and leaves.
+    let room_id = invite(&service, NAMED_INVITER, &first).await;
+    client_api(
+        &service,
+        NAMED_FIRST,
+        &format!("rooms/{room_id}/join"),
+        json!({}),
+    )
+    .await;
+    add(&service, NAMED_INVITER, &room_id, &pending, None).await;
+    add(
+        &service,
+        NAMED_INVITER,
+        &room_id,
+        &second,
+        Some(NAMED_SECOND),
+    )
+    .await;
+    add(&service, NAMED_INVITER, &room_id, &gone, Some(NAMED_GONE)).await;
+    client_api(
+        &service,
+        NAMED_GONE,
+        &format!("rooms/{room_id}/leave"),
+        json!({}),
+    )
+    .await;
+    let start = sync(&service, NAMED_INVITEE, None).await;
+    add(&service, NAMED_INVITER, &room_id, &invitee, None).await;
+
+    // A server that is not configured to name members sends the inviter's membership and the
+    // invitation, as before.
+    let invited = sync(&service, NAMED_INVITEE, Some(pos(&start))).await;
+    assert_eq!(
+        members(&invited["rooms"][room_id.as_str()]["invite_state"]),
+        [membership(&inviter, "join"), membership(&invitee, "invite")],
+        "{invited}"
+    );
+
+    let invitation = room::get_state(
+        &room_id,
+        &StateEventType::RoomMember,
+        invitee.as_str(),
+        None,
+    )
+    .await
+    .unwrap();
+    // Joined members come before invited ones, each from the earliest. A user who left is
+    // not a member, and neither the inviter nor the invited user is named twice.
+    let others = [
+        membership(&first, "join"),
+        membership(&second, "join"),
+        membership(&pending, "invite"),
+    ];
+    for (limit, named) in [(0, 0), (1, 1), (2, 2), (3, 3), (usize::MAX, 3)] {
+        let stripped = state::invitation_stripped_with(&invitation, limit)
+            .await
+            .unwrap();
+        let stripped = serde_json::to_value(&stripped).unwrap();
+        let mut expected = vec![membership(&inviter, "join")];
+        expected.extend_from_slice(&others[..named]);
+        expected.push(membership(&invitee, "invite"));
+        assert_eq!(members(&stripped), expected, "limit {limit}: {stripped}");
+        // The invitation stays the last event.
+        let last = stripped.as_array().unwrap().last().unwrap();
+        assert_eq!(
+            last["state_key"],
+            json!(invitee),
+            "limit {limit}: {stripped}"
+        );
+        assert!(
+            !stripped.to_string().contains(gone.as_str()),
+            "limit {limit}: {stripped}"
+        );
+    }
+}
+
+const LISTED_OWNER: &str = "sliding-invitation-listed-owner";
+const LISTED_FIRST: &str = "sliding-invitation-listed-first";
+const LISTED_SECOND: &str = "sliding-invitation-listed-second";
+const LISTED_THIRD: &str = "sliding-invitation-listed-third";
+const LISTED_INVITEE: &str = "sliding-invitation-listed-invitee";
+const LISTED_KNOCKER: &str = "sliding-invitation-listed-knocker";
+
+#[test]
+#[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
+fn review_invitation_names_room_members_when_configured() {
+    run_database_test(
+        "invitation-members-configured",
+        configured_invitation_members,
+    );
+}
+
+async fn configured_invitation_members() {
+    crate::test_database::init();
+    crate::config::CONFIG
+        .set(
+            serde_json::from_value(json!({
+                "server_name": "invitation.example", "db": {"url": "unused-test-config"},
+                "ip_range_denylist": [], "invite_state_member_limit": 2,
+            }))
+            .unwrap(),
+        )
+        .expect("run alone");
+    let owner = create_user("invitation-listed-owner", LISTED_OWNER).await;
+    let first = create_user("invitation-listed-first", LISTED_FIRST).await;
+    let second = create_user("invitation-listed-second", LISTED_SECOND).await;
+    let third = create_user("invitation-listed-third", LISTED_THIRD).await;
+    let invitee = create_user("invitation-listed-invitee", LISTED_INVITEE).await;
+    let knocker = create_user("invitation-listed-knocker", LISTED_KNOCKER).await;
+    let service = Service::new(crate::routing::root());
+
+    let room_id = invite(&service, LISTED_OWNER, &first).await;
+    client_api(
+        &service,
+        LISTED_FIRST,
+        &format!("rooms/{room_id}/join"),
+        json!({}),
+    )
+    .await;
+    add(
+        &service,
+        LISTED_OWNER,
+        &room_id,
+        &second,
+        Some(LISTED_SECOND),
+    )
+    .await;
+    add(&service, LISTED_OWNER, &room_id, &third, Some(LISTED_THIRD)).await;
+    let start = sync(&service, LISTED_INVITEE, None).await;
+    add(&service, LISTED_OWNER, &room_id, &invitee, None).await;
+
+    // The invitation names the two earliest of the three other members, in sliding sync and
+    // in `/sync`.
+    let expected = [
+        membership(&owner, "join"),
+        membership(&first, "join"),
+        membership(&second, "join"),
+        membership(&invitee, "invite"),
+    ];
+    let invited = sync(&service, LISTED_INVITEE, Some(pos(&start))).await;
+    assert_eq!(
+        members(&invited["rooms"][room_id.as_str()]["invite_state"]),
+        expected,
+        "{invited}"
+    );
+    let mut response = send(
+        TestClient::get("http://localhost/_matrix/client/v3/sync?timeout=0").add_header(
+            "Authorization",
+            format!("Bearer {LISTED_INVITEE}"),
+            true,
+        ),
+        &service,
+    )
+    .await;
+    let classic = response.take_json::<Value>().await.unwrap();
+    assert_eq!(response.status_code, Some(StatusCode::OK), "{classic}");
+    assert_eq!(
+        members(&classic["rooms"]["invite"][room_id.as_str()]["invite_state"]["events"]),
+        expected,
+        "{classic}"
+    );
+
+    // Such an invitation is accepted like any other.
+    client_api(
+        &service,
+        LISTED_INVITEE,
+        &format!("rooms/{room_id}/join"),
+        json!({}),
+    )
+    .await;
+    let joined = sync(&service, LISTED_INVITEE, Some(pos(&invited))).await;
+    assert_joined_in_full(&joined["rooms"][room_id.as_str()], &invitee);
+
+    // Nobody in a room asks for a knock, so the state kept with a knock names no member of
+    // the room.
+    let created = client_api(
+        &service,
+        LISTED_OWNER,
+        "createRoom",
+        json!({
+            "room_version": "11",
+            "preset": "private_chat",
+            "name": "Knock room",
+            "initial_state": [{
+                "type": "m.room.join_rules",
+                "state_key": "",
+                "content": {"join_rule": "knock"},
+            }],
+        }),
+    )
+    .await;
+    let knock_room = OwnedRoomId::try_from(created["room_id"].as_str().unwrap()).unwrap();
+    add(
+        &service,
+        LISTED_OWNER,
+        &knock_room,
+        &first,
+        Some(LISTED_FIRST),
+    )
+    .await;
+    client_api(
+        &service,
+        LISTED_KNOCKER,
+        &format!("knock/{knock_room}"),
+        json!({}),
+    )
+    .await;
+    let knock = room::user::current_membership(&knocker, &knock_room)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(knock.membership, MembershipState::Knock);
+    let kept = knock.stripped_state.unwrap();
+    assert!(!members(&kept).is_empty(), "{kept}");
+    for (user_id, _) in members(&kept) {
+        assert!(
+            user_id == knocker.as_str() || user_id == owner.as_str(),
+            "{kept}"
+        );
+    }
+    assert!(!kept.to_string().contains(first.as_str()), "{kept}");
 }

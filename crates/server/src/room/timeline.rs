@@ -190,6 +190,23 @@ pub async fn get_pdu(event_id: &EventId) -> AppResult<SnPduEvent> {
     batch::load_one(event_id).await
 }
 
+/// Loads the given events, in the order they are named. An event that is not stored is left
+/// out.
+pub(crate) async fn get_pdus(event_ids: &[OwnedEventId]) -> AppResult<Vec<SnPduEvent>> {
+    let mut pdus = Vec::with_capacity(event_ids.len());
+    for chunk in event_ids.chunks(batch::CHUNK_SIZE) {
+        let mut stored = batch::PduBatch::load(chunk.iter().map(|event_id| &**event_id)).await?;
+        for event_id in chunk {
+            match stored.take(event_id).await {
+                Ok(pdu) => pdus.push(pdu),
+                Err(error) if error.is_not_found() => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(pdus)
+}
+
 pub async fn get_pdu_and_data(event_id: &EventId) -> AppResult<(SnPduEvent, CanonicalJsonObject)> {
     let event = events::table
         .filter(events::id.eq(event_id))
@@ -479,6 +496,14 @@ async fn append_pdu_fenced(
                     .map_err(|_| AppError::internal("Invalid content in pdu."))?;
 
                 let stripped_state = match content.membership {
+                    // Only an invitation of one of this server's users may name the room's
+                    // other members. No member of the room asked for a knock, and no client
+                    // reads the state kept for a user of another server.
+                    MembershipState::Invite
+                        if crate::config::get().server_name == target_user_id.server_name() =>
+                    {
+                        Some(state::invitation_stripped(pdu).await?)
+                    }
                     MembershipState::Invite | MembershipState::Knock => {
                         let state = state::summary_stripped(pdu).await?;
                         Some(state)
