@@ -116,13 +116,14 @@ pub async fn paginate_relations_with_filter(
         (events, next_token)
     };
 
-    let events: Vec<_> = events
-        .into_iter()
-        .map(|(_, pdu)| pdu.to_message_like_event_for(user_id, device_id))
-        .collect();
+    let mut chunk = Vec::with_capacity(events.len());
+    for (_, mut pdu) in events {
+        pdu.load_thread_summary_for(user_id).await;
+        chunk.push(pdu.to_message_like_event_for(user_id, device_id));
+    }
 
     Ok(RelationEventsResBody {
-        chunk: events,
+        chunk,
         next_batch: next_token.map(|t| t.to_string()),
         prev_batch,
         recursion_depth: if recurse { Some(depth.into()) } else { None },

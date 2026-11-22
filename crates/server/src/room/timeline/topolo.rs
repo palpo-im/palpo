@@ -398,6 +398,7 @@ async fn load_pdus_selected(
                             pdu.remove_sender_only_unsigned()?;
                         }
                         pdu.add_unsigned_membership(user_id).await?;
+                        pdu.load_thread_summary_for(user_id).await;
                     }
                     pdu.add_age()?;
                     list.insert(*event_sn, pdu);

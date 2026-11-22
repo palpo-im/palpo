@@ -140,10 +140,11 @@ pub async fn get_threads(
                 last_sn,
                 event_id: event_id.clone(),
             });
-            let pdu = timeline::get_pdu(&event_id).await?;
+            let mut pdu = timeline::get_pdu(&event_id).await?;
             if !pdu.user_can_see(user_id).await? {
                 continue;
             }
+            pdu.load_thread_summary_for(user_id).await;
             visible.push((event_id, last_sn, pdu));
             if visible.len() as i64 > limit {
                 break 'scan;
@@ -181,6 +182,10 @@ pub async fn get_threads(
 
 pub async fn add_to_thread(thread_id: &EventId, pdu: &SnPduEvent) -> AppResult<()> {
     let (root_pdu, mut root_pdu_json) = timeline::get_pdu_and_data(thread_id).await?;
+    // A relation holds within one room: an event of another room is no reply in this thread.
+    if root_pdu.room_id != pdu.room_id {
+        return Ok(());
+    }
 
     if let CanonicalJsonValue::Object(unsigned) = root_pdu_json
         .entry("unsigned".to_owned())

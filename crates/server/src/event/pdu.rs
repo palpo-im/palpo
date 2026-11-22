@@ -26,8 +26,8 @@ use crate::core::events::{
 use crate::core::identifiers::*;
 use crate::core::room_version_rules::RoomIdFormatVersion;
 use crate::core::serde::{
-    CanonicalJsonObject, CanonicalJsonValue, JsonValue, RawJson, RawJsonValue, default_false,
-    to_canonical_object, to_canonical_value, validate_canonical_json,
+    CanonicalJsonObject, CanonicalJsonValue, JsonObject, JsonValue, RawJson, RawJsonValue,
+    default_false, to_canonical_object, to_canonical_value, validate_canonical_json,
 };
 use crate::core::state::{StateError, event_auth};
 use crate::core::{Seqnum, UnixMillis, UserId};
@@ -433,6 +433,10 @@ pub struct PduEvent {
     pub(crate) transaction_endpoint: Option<String>,
     #[serde(skip)]
     pub(crate) thread_participants: std::collections::BTreeSet<OwnedUserId>,
+    /// The latest reply of the thread this event starts, as the user it names may see it now.
+    /// The reply stored with the event is the one that was sent, whoever reads the event.
+    #[serde(skip)]
+    pub(crate) thread_latest: Option<(OwnedUserId, JsonValue)>,
 }
 
 impl PduEvent {
@@ -529,19 +533,29 @@ impl PduEvent {
             if is_sender && let Some(delay_id) = self.unsigned.get(DELAY_ID_UNSIGNED_KEY) {
                 unsigned.insert(DELAY_ID_UNSIGNED_KEY.into(), delay_id.clone());
             }
-            if let Some(raw) = unsigned.get_mut("m.relations")
-                && let Ok(mut relations) = serde_json::from_str::<JsonValue>(raw.get())
-                && let Some(thread) = relations
-                    .get_mut("m.thread")
-                    .and_then(JsonValue::as_object_mut)
+            // A thread's summary goes to the user its latest reply was checked for.
+            if let Some((reader, latest)) = &self.thread_latest
+                && *reader == recipient
+                && let Some(mut thread) = self.stored_thread_summary()
             {
+                let mut latest = latest.clone();
+                strip_embedded_metadata(&mut latest);
+                thread.insert("latest_event".into(), latest);
                 thread.insert(
                     "current_user_participated".into(),
                     JsonValue::Bool(
                         self.sender == recipient || self.thread_participants.contains(recipient),
                     ),
                 );
-                *raw = to_raw_value(&relations).expect("relations serialize");
+                let mut relations = unsigned
+                    .get("m.relations")
+                    .and_then(|raw| serde_json::from_str::<JsonObject>(raw.get()).ok())
+                    .unwrap_or_default();
+                relations.insert("m.thread".into(), JsonValue::Object(thread));
+                unsigned.insert(
+                    "m.relations".into(),
+                    to_raw_value(&relations).expect("relations serialize"),
+                );
             }
             Cow::Owned(unsigned)
         }
@@ -557,11 +571,63 @@ impl PduEvent {
             if let Some(raw) = unsigned.remove(key)
                 && let Ok(mut value) = serde_json::from_str::<JsonValue>(raw.get())
             {
-                strip_embedded_transaction_ids(&mut value);
+                strip_embedded_metadata(&mut value);
+                // The summary of a thread holds its latest reply, which not everyone who is
+                // sent this event may see: `unsigned_for_recipient` adds it for a user it
+                // was checked for.
+                if key == "m.relations"
+                    && let Some(relations) = value.as_object_mut()
+                {
+                    relations.remove("m.thread");
+                    if relations.is_empty() {
+                        continue;
+                    }
+                }
                 unsigned.insert(key.into(), to_raw_value(&value).expect("valid JSON"));
             }
         }
         unsigned
+    }
+
+    /// The summary of the thread this event starts, as it is stored with the event.
+    fn stored_thread_summary(&self) -> Option<JsonObject> {
+        let relations: JsonValue =
+            serde_json::from_str(self.unsigned.get("m.relations")?.get()).ok()?;
+        relations.get("m.thread")?.as_object().cloned()
+    }
+
+    /// Decide what `recipient` is shown of the thread this event starts.
+    ///
+    /// The summary stored with a thread's first event holds the latest reply as it was sent.
+    /// A user may see the first event and not that reply, and the reply may have been redacted
+    /// since. So an event goes out without the summary unless this found the reply to be one
+    /// that `recipient` may see, and the summary then holds the reply as it is now.
+    ///
+    /// A reply that cannot be loaded or checked leaves the event without the summary: the
+    /// request that serves the first event does not fail for it.
+    pub(crate) async fn load_thread_summary_for(&mut self, recipient: &UserId) {
+        self.thread_latest = None;
+        let Some(latest_id) = self.stored_thread_summary().and_then(|thread| {
+            let id = thread.get("latest_event")?.get("event_id")?.clone();
+            serde_json::from_value::<OwnedEventId>(id).ok()
+        }) else {
+            return;
+        };
+        let Ok(latest) = get_pdu(&latest_id).await else {
+            return;
+        };
+        if latest.room_id != self.room_id
+            || latest.is_outlier
+            || latest.soft_failed
+            || crate::event::is_ignored_sender_pdu(&latest, recipient).await
+            || !latest.user_can_see(recipient).await.unwrap_or(false)
+        {
+            return;
+        }
+        let latest = latest.to_message_like_event_without_transaction_id();
+        self.thread_latest = serde_json::from_str(latest.as_str())
+            .ok()
+            .map(|latest| (recipient.to_owned(), latest));
     }
 
     fn transaction_metadata(&self) -> Option<JsonValue> {
@@ -1328,6 +1394,7 @@ impl PduBuilder {
             transaction_device,
             transaction_endpoint,
             thread_participants: Default::default(),
+            thread_latest: None,
         };
 
         // MSC4354: the sticky object is top level, not inside `content`, so that it stays
@@ -1467,22 +1534,28 @@ impl Default for PduBuilder {
 pub(crate) const DELAY_ID_UNSIGNED_KEY: &str = "org.matrix.msc4140.delay_id";
 
 /// Only event metadata is private; similarly named fields inside content are user data.
-fn strip_embedded_transaction_ids(value: &mut JsonValue) {
+///
+/// An event inside another event also loses the summary of the thread it starts: the reply
+/// in it is checked for no reader.
+fn strip_embedded_metadata(value: &mut JsonValue) {
     match value {
         JsonValue::Object(object) => {
             if let Some(JsonValue::Object(unsigned)) = object.get_mut("unsigned") {
                 unsigned.remove("transaction_id");
                 unsigned.remove(DELAY_ID_UNSIGNED_KEY);
+                if let Some(JsonValue::Object(relations)) = unsigned.get_mut("m.relations") {
+                    relations.remove("m.thread");
+                }
             }
             for (key, value) in object {
                 if key != "content" {
-                    strip_embedded_transaction_ids(value);
+                    strip_embedded_metadata(value);
                 }
             }
         }
         JsonValue::Array(values) => {
             for value in values {
-                strip_embedded_transaction_ids(value);
+                strip_embedded_metadata(value);
             }
         }
         _ => {}
@@ -1499,10 +1572,21 @@ pub(crate) fn sanitize_federation_unsigned(pdu: &mut CanonicalJsonObject) {
     for key in ["redacted_because", "m.relations"] {
         if let Some(value) = unsigned.get_mut(key) {
             let mut json = serde_json::to_value(&*value).expect("valid canonical JSON");
-            strip_embedded_transaction_ids(&mut json);
+            strip_embedded_metadata(&mut json);
             *value =
                 serde_json::from_value(json).expect("removing fields preserves canonical JSON");
         }
+    }
+    // The summary of a thread is put together for a local reader who may see its latest reply.
+    let emptied = match unsigned.get_mut("m.relations") {
+        Some(CanonicalJsonValue::Object(relations)) => {
+            relations.remove("m.thread");
+            relations.is_empty()
+        }
+        _ => false,
+    };
+    if emptied {
+        unsigned.remove("m.relations");
     }
 }
 
@@ -1539,6 +1623,7 @@ mod sender_only_unsigned_tests {
             transaction_device: None,
             transaction_endpoint: None,
             thread_participants: Default::default(),
+            thread_latest: None,
         }
     }
 
@@ -1680,6 +1765,73 @@ mod sender_only_unsigned_tests {
     }
 
     #[test]
+    fn a_thread_summary_goes_to_the_user_it_was_checked_for() {
+        let mut event = event_with_transaction_id();
+        let reply = |content: JsonValue| {
+            json!({
+                "type": "m.room.message", "event_id": "$reply:example.org",
+                "sender": "@other:example.org", "content": content
+            })
+        };
+        event.unsigned.insert(
+            "m.relations".into(),
+            to_raw_value(&json!({"m.thread": {
+                "latest_event": reply(json!({"body": "as it was sent"})), "count": 2,
+                "current_user_participated": false
+            }}))
+            .unwrap(),
+        );
+        let reader: OwnedUserId = "@reader:example.org".try_into().unwrap();
+        let summary = |event: &PduEvent, user: &UserId| {
+            let json: JsonValue =
+                serde_json::from_str(event.to_room_event_for(user, None).as_str()).unwrap();
+            json.pointer("/unsigned/m.relations").cloned()
+        };
+
+        // Checked for no one, the stored reply goes to no one.
+        assert_eq!(summary(&event, &reader), None);
+        assert_eq!(summary(&event, &event.sender), None);
+        let neutral: JsonValue =
+            serde_json::from_str(event.to_room_event_without_transaction_id().as_str()).unwrap();
+        assert!(neutral.pointer("/unsigned/m.relations").is_none());
+
+        // Checked for one reader, it goes to that reader, as the reply is now.
+        let now = reply(json!({}));
+        event.thread_latest = Some((reader.clone(), now.clone()));
+        assert_eq!(
+            summary(&event, &reader),
+            Some(json!({"m.thread": {
+                "latest_event": now, "count": 2, "current_user_participated": false
+            }}))
+        );
+        assert_eq!(summary(&event, &event.sender), None);
+
+        // An event inside this one, here the redaction, keeps no summary of its own thread.
+        event.unsigned.insert(
+            "redacted_because".into(),
+            to_raw_value(&json!({
+                "type": "m.room.redaction", "sender": "@other:example.org", "content": {},
+                "unsigned": {"age": 3, "m.relations": {"m.thread": {
+                    "latest_event": reply(json!({"body": "as it was sent"})), "count": 1
+                }}}
+            }))
+            .unwrap(),
+        );
+        let nested = "/unsigned/redacted_because/unsigned";
+        let client: JsonValue =
+            serde_json::from_str(event.to_room_event_for(&reader, None).as_str()).unwrap();
+        let mut federation = to_canonical_object(&event).unwrap();
+        sanitize_federation_unsigned(&mut federation);
+        for form in [client, serde_json::to_value(federation).unwrap()] {
+            assert_eq!(form.pointer(&format!("{nested}/age")), Some(&json!(3)));
+            assert_eq!(
+                form.pointer(&format!("{nested}/m.relations/m.thread")),
+                None
+            );
+        }
+    }
+
+    #[test]
     fn stored_redactions_and_relation_bundles_do_not_leak_device_metadata() {
         let mut event = event_with_transaction_id();
         event.transaction_device = Some("PHONE".into());
@@ -1698,6 +1850,7 @@ mod sender_only_unsigned_tests {
             }))
             .unwrap(),
         );
+        event.thread_latest = Some((event.sender.clone(), embedded.clone()));
         for device in [Some("PHONE".into()), Some("LAPTOP".into()), None] {
             let converted = event.to_room_event_for(&event.sender, device);
             let json: JsonValue = serde_json::from_str(converted.as_str()).unwrap();
@@ -1728,9 +1881,14 @@ mod sender_only_unsigned_tests {
         sanitize_federation_unsigned(&mut federation);
         let federation = serde_json::to_value(federation).unwrap();
         assert!(federation.pointer("/unsigned/transaction_id").is_none());
+        // A thread's summary is for a local reader it was checked for.
+        assert!(
+            federation
+                .pointer("/unsigned/m.relations/m.thread")
+                .is_none()
+        );
         for path in [
             "/unsigned/redacted_because",
-            "/unsigned/m.relations/m.thread/latest_event",
             "/unsigned/m.relations/m.replace",
         ] {
             assert!(
@@ -1855,6 +2013,7 @@ mod filter_tests {
             transaction_device: None,
             transaction_endpoint: None,
             thread_participants: Default::default(),
+            thread_latest: None,
         }
     }
 

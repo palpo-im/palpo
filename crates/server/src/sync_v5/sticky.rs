@@ -342,6 +342,7 @@ pub(super) async fn render(
                     pdu.remove_sender_only_unsigned()?;
                 }
                 pdu.add_unsigned_membership(info.sender_id).await?;
+                pdu.load_thread_summary_for(info.sender_id).await;
                 pdu.add_age()?;
                 events.push(
                     crate::event::sticky::with_ttl(pdu, expiry, UnixMillis::now())
