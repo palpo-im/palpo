@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
 use diesel::prelude::*;
-use horme::RunQueryDsl;
+use horme::{OptionalExtension as _, RunQueryDsl};
 use indexmap::IndexMap;
 use lru_cache::LruCache;
 
@@ -539,6 +539,44 @@ pub async fn membership(user_id: &UserId, room_id: &RoomId) -> AppResult<Members
         )
     }
 }
+/// A user's current membership of a room.
+#[derive(Debug)]
+pub struct CurrentMembership {
+    pub membership: MembershipState,
+    /// The position of the membership event.
+    pub event_sn: Seqnum,
+    /// The stripped state kept with an invitation or a knock.
+    pub stripped_state: Option<JsonValue>,
+}
+
+/// The user's current membership of a room, or `None` for a user who has never been in the
+/// room, been invited to it or knocked on it.
+#[tracing::instrument(level = "trace")]
+pub async fn current_membership(
+    user_id: &UserId,
+    room_id: &RoomId,
+) -> AppResult<Option<CurrentMembership>> {
+    let row = room_users::table
+        .filter(room_users::user_id.eq(user_id))
+        .filter(room_users::room_id.eq(room_id))
+        .order_by(room_users::id.desc())
+        .select((
+            room_users::membership,
+            room_users::event_sn,
+            room_users::state_data,
+        ))
+        .first::<(String, Seqnum, Option<JsonValue>)>(&mut crate::data::db())
+        .await
+        .optional()?;
+    Ok(
+        row.map(|(membership, event_sn, stripped_state)| CurrentMembership {
+            membership: membership.into(),
+            event_sn,
+            stripped_state,
+        }),
+    )
+}
+
 /// Returns an iterator over all rooms a user left.
 #[tracing::instrument]
 pub async fn left_rooms(
