@@ -13,6 +13,7 @@ use crate::core::client::sync_events::v5::*;
 use crate::core::client::sync_events::{self};
 use crate::core::events::direct::DirectEventContent;
 use crate::core::events::receipt::{SyncReceiptEvent, combine_receipt_event_contents};
+use crate::core::events::room::member::MembershipState;
 use crate::core::events::{
     AnyRawAccountDataEvent, GlobalAccountDataEventType, StateEventType, TimelineEventType,
 };
@@ -29,6 +30,8 @@ use crate::{AppResult, data, extract_variant};
 mod invitation_tests;
 #[cfg(test)]
 mod lazy_member_tests;
+#[cfg(test)]
+mod membership_tests;
 #[cfg(feature = "unstable-msc4559")]
 mod presence;
 #[cfg(feature = "unstable-msc4262")]
@@ -1201,7 +1204,8 @@ async fn sync_events_at_position(
             e2ee: collect_e2ee(sync_info, &all_joined_rooms, curr_sn).await?,
             to_device: collect_to_device(sync_info, next_batch).await,
             receipts: collect_receipts(sync_info),
-            typing: collect_typing(sync_info, next_batch, all_rooms.iter().cloned()).await?,
+            // Who is typing is for the members of a room, not for a user it has not let in.
+            typing: collect_typing(sync_info, next_batch, all_joined_rooms.iter().cloned()).await?,
             #[cfg(feature = "unstable-msc4262")]
             profiles: Default::default(),
             #[cfg(feature = "unstable-msc4559")]
@@ -1274,6 +1278,8 @@ async fn sync_events_at_position(
     )
     .await?;
     res_body.rooms = rooms;
+    // A room that the connection holds as an invitation or as a knock is not one it knows as
+    // a joined room. A knock that stands is not in the response.
     forget_invited_rooms(
         sender_id,
         device_id,
@@ -1283,6 +1289,15 @@ async fn sync_events_at_position(
             .iter()
             .filter(|(_, room)| room.invite_state.is_some())
             .map(|(room_id, _)| room_id.clone())
+            .chain(
+                all_knocked_rooms
+                    .iter()
+                    .filter(|room_id| {
+                        todo_rooms.contains_key(**room_id)
+                            && !res_body.rooms.contains_key(**room_id)
+                    })
+                    .map(|room_id| (**room_id).to_owned()),
+            )
             .collect(),
     )
     .await;
@@ -1584,11 +1599,18 @@ async fn fetch_subscriptions(
 ) -> AppResult<()> {
     let mut known_subscription_rooms = BTreeSet::new();
     for (room_id, room) in &req_body.room_subscriptions {
-        // Explicit subscriptions must obey the same invite filter as room lists.
-        if !all_invited_rooms.contains(&room_id.as_ref())
-            && crate::room::user::is_invited(sender_id, room_id).await?
-        {
-            continue;
+        match room::user::current_membership(sender_id, room_id).await? {
+            // A user subscribes to a room they have a part in: a room's ID alone opens
+            // nothing of the room.
+            None => continue,
+            // Explicit subscriptions must obey the same invite filter as room lists.
+            Some(current)
+                if current.membership == MembershipState::Invite
+                    && !all_invited_rooms.contains(&room_id.as_ref()) =>
+            {
+                continue;
+            }
+            Some(_) => {}
         }
         if !crate::room::room_exists(room_id).await? {
             continue;
@@ -1677,23 +1699,45 @@ async fn process_rooms(
         },
     ) in todo_rooms
     {
-        // Explicit subscriptions must obey the same invite filter as room lists.
-        if !invite_snapshot.rooms.contains_key(room_id)
-            && crate::room::user::is_invited(sender_id, room_id).await?
-        {
+        // What a user is sent of a room follows from their membership as it is now, whether a
+        // list or a subscription named the room. The invitations were read when this request
+        // began, and the user may have joined or declined since. Such a room must not go out
+        // as an invitation: a client takes invite state for the room's membership and would
+        // hold the room as invited again.
+        let Some(room::user::CurrentMembership {
+            membership,
+            event_sn: membership_sn,
+            stripped_state,
+        }) = room::user::current_membership(sender_id, room_id).await?
+        else {
+            // The user has no part in the room.
             continue;
-        }
+        };
         let mut timestamp: Option<_> = None;
-        // The invitations were read when this request began, and the user may have joined
-        // the room since. A joined room must not go out as an invitation: a client takes
-        // invite state for the room's membership and would hold the room as invited again.
-        // Never reload the invitation by room ID: that could render a different event.
-        let invite_state = match invite_snapshot.rooms.get(room_id) {
-            Some(state) if !crate::room::user::is_joined(sender_id, room_id).await? => {
-                Some(state.clone())
+        let invite_state = match membership {
+            // Never reload the invitation by room ID: that could render a different event.
+            MembershipState::Invite => match invite_snapshot.rooms.get(room_id) {
+                Some(state) => Some(state.clone()),
+                // Explicit subscriptions must obey the same invite filter as room lists.
+                None => continue,
+            },
+            // The room has not let a knocking user in. Like an invited user, they are sent
+            // the stripped state kept with their membership. It holds the knock itself, by
+            // which a client tells a knock from an invitation.
+            MembershipState::Knock => {
+                match stripped_state.and_then(|state| serde_json::from_value::<Vec<_>>(state).ok())
+                {
+                    Some(state) if !state.is_empty() => Some(state),
+                    _ => continue,
+                }
             }
             _ => None,
         };
+        let is_member = membership == MembershipState::Join;
+        // A user who left the room or was removed from it is sent their own membership, which
+        // is what tells a client so, and no other state of the room. Their timeline holds
+        // what the room's history visibility lets them see.
+        let has_left = !is_member && invite_state.is_none();
         // A room this connection does not know as a joined room -- among them one it held as
         // an invitation until now -- is sent as a new room, with its full state: only the
         // user's own join event in the room state tells a client that it joined.
@@ -1701,6 +1745,35 @@ async fn process_rooms(
             .values()
             .any(|rooms| rooms.contains_key(room_id));
         let is_initial = *room_since_sn == 0 || is_new;
+        // A knock that stands is no news. It goes out until the client returns with the token
+        // of a response that carried it, which the record of sent state keeps under the user's
+        // own member event.
+        if membership == MembershipState::Knock {
+            let (ty, key) = (
+                StateEventType::RoomMember.to_string(),
+                sender_id.to_string(),
+            );
+            requested_state
+                .entry(room_id.clone())
+                .or_default()
+                .entry(ty.clone())
+                .or_default()
+                .insert(key.clone(), membership_sn);
+            if acknowledged
+                .get(room_id)
+                .and_then(|types| types.get(&ty))
+                .and_then(|keys| keys.get(&key))
+                == Some(&membership_sn)
+            {
+                continue;
+            }
+            sent_state
+                .entry(room_id.clone())
+                .or_default()
+                .entry(ty)
+                .or_default()
+                .insert(key, membership_sn);
+        }
 
         let timeline = if invite_state.is_some() {
             TimelineData {
@@ -1747,7 +1820,8 @@ async fn process_rooms(
             }
         }
 
-        let receipt_size = if receipts_enabled {
+        // Who has read what is for the members of a room.
+        let receipt_size = if receipts_enabled && is_member {
             let receipts =
                 data::room::receipt::read_receipts(room_id, *room_since_sn, Some(sender_id))
                     .await?
@@ -1803,9 +1877,18 @@ async fn process_rooms(
         let mut candidates = BTreeMap::new();
         let mut full_state = None;
         let mut lazy_senders_collected = false;
-        // An invited user is sent the invitation's stripped state only, not the room's state.
-        let required_state: Vec<_> = if invite_state.is_none() {
+        // An invited or knocking user is sent the stripped state only, not the room's state.
+        let own_membership = (StateEventType::RoomMember, "$ME".to_owned());
+        let required_state: Vec<_> = if is_member {
             required_state.iter().collect()
+        } else if has_left
+            && required_state.iter().any(|(event_type, key)| {
+                *event_type == StateEventType::RoomMember
+                    && (matches!(key.as_str(), "$ME" | "$LAZY" | "*")
+                        || key.as_str() == sender_id.as_str())
+            })
+        {
+            vec![&own_membership]
         } else {
             Vec::new()
         };
@@ -1916,9 +1999,18 @@ async fn process_rooms(
             continue;
         }
 
+        // A room's name and avatar are in its stripped state too: they go to every user but
+        // one who has left. Its members and their numbers are for its members; an invitation
+        // carries them as before.
+        let room_name = if has_left {
+            None
+        } else {
+            room::get_name(room_id).await.ok()
+        };
+        let with_members = is_member || membership == MembershipState::Invite;
         // Heroes - only compute when requested or when room name isn't set
-        let room_name = room::get_name(room_id).await.ok();
-        let (heroes, hero_name, heroes_avatar) = if *include_heroes || room_name.is_none() {
+        let with_heroes = with_members && (*include_heroes || room_name.is_none());
+        let (heroes, hero_name, heroes_avatar) = if with_heroes {
             let mut heroes: Vec<sync_events::v5::SyncRoomHero> = Vec::new();
             for user_id in room::get_members_limit(room_id, 6)
                 .await?
@@ -1979,6 +2071,7 @@ async fn process_rooms(
                 name: room_name.or(hero_name),
                 avatar: match heroes_avatar {
                     Some(ref heroes_avatar) => Some(heroes_avatar.clone()),
+                    _ if has_left => None,
                     _ => room::get_avatar_url(room_id).await.ok().flatten(),
                 },
                 initial: Some(is_initial),
@@ -1992,20 +2085,28 @@ async fn process_rooms(
                 required_state,
                 prev_batch,
                 limited: timeline.limited,
-                joined_count: Some(
-                    crate::room::joined_member_count(room_id)
-                        .await
-                        .unwrap_or(0)
-                        .try_into()
-                        .unwrap_or(0),
-                ),
-                invited_count: Some(
-                    crate::room::invited_member_count(room_id)
-                        .await
-                        .unwrap_or(0)
-                        .try_into()
-                        .unwrap_or(0),
-                ),
+                joined_count: if with_members {
+                    Some(
+                        crate::room::joined_member_count(room_id)
+                            .await
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap_or(0),
+                    )
+                } else {
+                    None
+                },
+                invited_count: if with_members {
+                    Some(
+                        crate::room::invited_member_count(room_id)
+                            .await
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap_or(0),
+                    )
+                } else {
+                    None
+                },
                 num_live: Some(
                     timeline
                         .events
