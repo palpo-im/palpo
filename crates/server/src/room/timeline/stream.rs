@@ -318,6 +318,7 @@ async fn load_pdus_with_publication_bound(
                             if publication_window.is_some() {
                                 membership?;
                             }
+                            pdu.load_thread_summary_for(user_id).await;
                         }
                         let _ = pdu.add_age();
                         list.insert(*event_sn, pdu);

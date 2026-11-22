@@ -345,7 +345,7 @@ pub async fn search_pdus(
     let mut results = Vec::new();
     let mut hits: Vec<Hit> = Vec::new();
     for (rank, event_id, ..) in items {
-        let Ok(pdu) = timeline::get_pdu(&event_id).await else {
+        let Ok(mut pdu) = timeline::get_pdu(&event_id).await else {
             continue;
         };
         if !state::user_can_see_event(user_id, &pdu.event_id)
@@ -354,6 +354,7 @@ pub async fn search_pdus(
         {
             continue;
         }
+        pdu.load_thread_summary_for(user_id).await;
         hits.push((
             pdu.event_id.clone(),
             pdu.room_id.clone(),

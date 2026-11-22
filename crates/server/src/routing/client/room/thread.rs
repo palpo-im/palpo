@@ -578,3 +578,266 @@ mod participation_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod summary_tests {
+    use salvo::test::{RequestBuilder, ResponseExt, TestClient};
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    async fn request(service: &Service, token: &str, builder: RequestBuilder) -> Value {
+        let builder = builder.add_header("authorization", format!("Bearer {token}"), true);
+        let router = service.router();
+        let mut response = tokio::spawn(async move { builder.send(router).await })
+            .await
+            .unwrap();
+        let value: Value = response.take_json().await.unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{value}");
+        value
+    }
+
+    async fn get(service: &Service, token: &str, path: &str) -> Value {
+        request(
+            service,
+            token,
+            TestClient::get(format!("http://localhost/{path}")),
+        )
+        .await
+    }
+
+    /// Sends a message to `room` and returns its event ID.
+    async fn send(service: &Service, token: &str, room: &str, txn: &str, content: Value) -> String {
+        let sent = request(
+            service,
+            token,
+            TestClient::put(format!(
+                "http://localhost/rooms/{room}/send/m.room.message/{txn}"
+            ))
+            .json(&content),
+        )
+        .await;
+        sent["event_id"].as_str().unwrap().to_owned()
+    }
+
+    async fn create_room(service: &Service, token: &str) -> String {
+        let created = request(
+            service,
+            token,
+            TestClient::post("http://localhost/createRoom")
+                .json(&json!({"room_version":"11","preset":"public_chat"})),
+        )
+        .await;
+        created["room_id"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL; run alone"]
+    fn database_thread_summary_holds_a_reply_that_its_reader_may_see() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(run());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn run() {
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name":"threads.example", "db":{"url":"unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let mut users = Vec::new();
+        for (name, token) in [("summarya", "summary-a"), ("summaryb", "summary-b")] {
+            let user =
+                crate::core::UserId::parse(format!("@{name}:{}", crate::config::server_name()))
+                    .unwrap();
+            crate::data::user::create_user(&crate::data::user::NewDbUser {
+                id: user.clone(),
+                ty: None,
+                is_admin: false,
+                is_guest: false,
+                is_local: true,
+                localpart: name.into(),
+                server_name: user.server_name().to_owned(),
+                appservice_id: None,
+                created_at: crate::core::UnixMillis::now(),
+            })
+            .await
+            .unwrap();
+            crate::data::user::device::create_device(
+                &user,
+                "SUMMARY_TEST".into(),
+                token,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            users.push(user);
+        }
+        let service = Service::new(
+            Router::new()
+                .hoop(crate::hoops::auth_by_access_token)
+                .push(
+                    Router::with_path("createRoom").post(crate::routing::client::room::create_room),
+                )
+                .push(crate::routing::client::room::authed_router()),
+        );
+        let (member, leaver) = ("summary-a", "summary-b");
+        let room = &create_room(&service, member).await;
+        request(
+            &service,
+            leaver,
+            TestClient::post(format!("http://localhost/rooms/{room}/join")).json(&json!({})),
+        )
+        .await;
+        let root = &send(
+            &service,
+            member,
+            room,
+            "summary-root",
+            json!({"msgtype":"m.text","body":"first event"}),
+        )
+        .await;
+        let reply = |body: &str| {
+            json!({"msgtype":"m.text","body":body,"m.relates_to":{"rel_type":"m.thread",
+                "event_id":root,"is_falling_back":true,"m.in_reply_to":{"event_id":root}}})
+        };
+        let summary = |event: &Value| event["unsigned"]["m.relations"]["m.thread"].clone();
+        // The thread's first event, as one of the events that a response lists under `key`.
+        let listed = |response: &Value, key: &str| {
+            response[key]
+                .as_array()
+                .and_then(|events| events.iter().find(|event| event["event_id"] == *root))
+                .unwrap_or_else(|| panic!("the first event is not in {key}: {response}"))
+                .clone()
+        };
+        let alone = &format!("rooms/{room}/event/{root}");
+        let threads = &format!("rooms/{room}/threads?include=all");
+        let messages = &format!("rooms/{room}/messages?dir=b&limit=50");
+
+        // While both are in the room, both are shown the reply.
+        let seen = &send(&service, leaver, room, "summary-seen", reply("seen reply")).await;
+        for token in [member, leaver] {
+            let event = get(&service, token, alone).await;
+            assert_eq!(
+                summary(&event)["latest_event"]["event_id"],
+                *seen,
+                "{event}"
+            );
+            assert_eq!(summary(&event)["count"], 1, "{event}");
+        }
+
+        // A reader who ignores the reply's sender is shown no summary.
+        crate::data::user::set_ignored_users(&users[0], std::slice::from_ref(&users[1]))
+            .await
+            .unwrap();
+        let event = get(&service, member, alone).await;
+        assert!(summary(&event).is_null(), "{event}");
+        crate::data::user::set_ignored_users(&users[0], &[])
+            .await
+            .unwrap();
+        let event = get(&service, member, alone).await;
+        assert_eq!(
+            summary(&event)["latest_event"]["event_id"],
+            *seen,
+            "{event}"
+        );
+
+        // One of them is removed, and the thread goes on.
+        request(
+            &service,
+            member,
+            TestClient::post(format!("http://localhost/rooms/{room}/kick"))
+                .json(&json!({"user_id": users[1]})),
+        )
+        .await;
+        let unseen = &send(
+            &service,
+            member,
+            room,
+            "summary-unseen",
+            reply("unseen reply"),
+        )
+        .await;
+        let around = &format!("rooms/{room}/context/{seen}?limit=10");
+
+        // The member is shown the new reply, wherever the first event is served.
+        let responses = [
+            get(&service, member, alone).await,
+            listed(&get(&service, member, threads).await, "chunk"),
+            listed(&get(&service, member, around).await, "events_before"),
+            listed(&get(&service, member, messages).await, "chunk"),
+        ];
+        for event in &responses {
+            assert_eq!(
+                summary(event)["latest_event"]["event_id"],
+                *unseen,
+                "{event}"
+            );
+            assert_eq!(summary(event)["count"], 2, "{event}");
+        }
+
+        // The removed user may still read the first event, and is shown nothing of a reply
+        // that was sent after the removal.
+        let responses = [
+            (get(&service, leaver, alone).await, None),
+            (get(&service, leaver, threads).await, Some("chunk")),
+            (get(&service, leaver, around).await, Some("events_before")),
+            (get(&service, leaver, messages).await, Some("chunk")),
+        ];
+        for (response, key) in &responses {
+            let event = key.map_or_else(|| response.clone(), |key| listed(response, key));
+            assert!(summary(&event).is_null(), "{event}");
+            let response = response.to_string();
+            assert!(!response.contains("unseen reply"), "{response}");
+            assert!(!response.contains(unseen.as_str()), "{response}");
+        }
+
+        // A redacted reply is shown as it is now, not as it was sent.
+        request(
+            &service,
+            member,
+            TestClient::put(format!(
+                "http://localhost/rooms/{room}/redact/{unseen}/summary-redact"
+            ))
+            .json(&json!({})),
+        )
+        .await;
+        let event = get(&service, member, alone).await;
+        assert_eq!(
+            summary(&event)["latest_event"]["event_id"],
+            *unseen,
+            "{event}"
+        );
+        assert!(!event.to_string().contains("unseen reply"), "{event}");
+
+        // An event of another room is no reply in this thread.
+        let elsewhere = &create_room(&service, member).await;
+        send(
+            &service,
+            member,
+            elsewhere,
+            "summary-elsewhere",
+            reply("from another room"),
+        )
+        .await;
+        let event = get(&service, member, alone).await;
+        assert_eq!(
+            summary(&event)["latest_event"]["event_id"],
+            *unseen,
+            "{event}"
+        );
+        assert_eq!(summary(&event)["count"], 2, "{event}");
+    }
+}

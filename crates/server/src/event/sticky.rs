@@ -636,6 +636,7 @@ mod tests {
             transaction_device: None,
             transaction_endpoint: None,
             thread_participants: Default::default(),
+            thread_latest: None,
         }
     }
 

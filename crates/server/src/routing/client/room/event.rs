@@ -49,7 +49,7 @@ pub(super) async fn get_room_event(
         return Err(MatrixError::not_found("event not found").into());
     }
 
-    let event = timeline::get_pdu(&args.event_id).await?;
+    let mut event = timeline::get_pdu(&args.event_id).await?;
 
     if !state::user_can_see_event(authed.user_id(), &args.event_id).await? {
         return Err(MatrixError::not_found("event not found").into());
@@ -64,6 +64,7 @@ pub(super) async fn get_room_event(
     if crate::event::is_ignored_pdu(&event, authed.user_id()).await {
         return Err(MatrixError::not_found("event not found").into());
     }
+    event.load_thread_summary_for(authed.user_id()).await;
 
     json_ok(RoomEventResBody::new(
         event.to_room_event_for(authed.user_id(), authed.device_id()),
@@ -167,7 +168,7 @@ pub(super) async fn get_context(
     let base_token = crate::event::get_live_token(&args.event_id)
         .await
         .map_err(|_| MatrixError::not_found("base event id not found"))?;
-    let base_event = timeline::get_pdu(&args.event_id).await?;
+    let mut base_event = timeline::get_pdu(&args.event_id).await?;
     let room_id = base_event.room_id.clone();
 
     if !state::user_can_see_event(sender_id, &args.event_id).await? {
@@ -197,6 +198,7 @@ pub(super) async fn get_context(
 
     // Use limit with maximum 100
     let limit = args.limit.min(100);
+    base_event.load_thread_summary_for(sender_id).await;
     let base_event = base_event.to_room_event_for(sender_id, authed.device_id());
     let events_before_loaded = timeline::stream::load_pdus_backward(
         Some(sender_id),

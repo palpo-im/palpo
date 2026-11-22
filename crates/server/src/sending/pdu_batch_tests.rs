@@ -281,11 +281,8 @@ async fn run() {
                 .get("org.matrix.msc4140.delay_id")
                 .is_none()
         );
-        assert!(
-            body["unsigned"]["m.relations"]["m.thread"]["latest_event"]["unsigned"]
-                .get("transaction_id")
-                .is_none()
-        );
+        // The summary of a thread, which holds another event, is for local readers.
+        assert!(body["unsigned"]["m.relations"].get("m.thread").is_none());
         let canonical = serde_json::from_value(body).unwrap();
         signatures::verify_event(
             &public,
