@@ -29,10 +29,11 @@ fn init_jwt_verifier(config: &JwtConfig) -> AppResult<DecodingKey> {
     let format = config.format.as_str();
 
     Ok(match format {
-        "HMAC" => DecodingKey::from_secret(secret.as_bytes()),
+        "HMAC" => DecodingKey::from_secret(secret.as_bytes())
+            .map_err(|_| AppError::public("jwt HMAC secret must not be empty"))?,
 
         "HMACB64" => DecodingKey::from_base64_secret(secret.as_str())
-            .map_err(|_e| AppError::public("jwt secret is not valid base64"))?,
+            .map_err(|_| AppError::public("jwt secret must be a non-empty base64-encoded key"))?,
 
         "ECDSA" => DecodingKey::from_ec_pem(secret.as_bytes())
             .map_err(|_e| AppError::public("jwt key is not valid PEM"))?,
@@ -82,13 +83,24 @@ mod tests {
     use jsonwebtoken::{EncodingKey, Header, encode};
     use serde::Serialize;
 
-    use super::validate_jwt_token;
+    use super::{init_jwt_verifier, validate_jwt_token};
     use crate::config::JwtConfig;
 
     #[derive(Serialize)]
     struct ExpiredClaims {
         sub: String,
         exp: u64,
+    }
+
+    #[test]
+    fn jwt_verifier_rejects_empty_hmac_keys() {
+        for format in ["HMAC", "HMACB64"] {
+            let config = JwtConfig {
+                format: format.to_owned(),
+                ..Default::default()
+            };
+            assert!(init_jwt_verifier(&config).is_err(), "{format}");
+        }
     }
 
     #[test]
@@ -105,7 +117,7 @@ mod tests {
                 sub: "alice".to_owned(),
                 exp,
             },
-            &EncodingKey::from_secret(b"test-secret"),
+            &EncodingKey::from_secret(b"test-secret").expect("valid HMAC test key"),
         )
         .expect("JWT token should be encoded");
 
