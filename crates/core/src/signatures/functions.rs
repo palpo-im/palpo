@@ -19,7 +19,7 @@ use crate::room_version_rules::{
 };
 use crate::serde::base64::Standard;
 use crate::serde::canonical_json::{JsonType, redact};
-use crate::serde::{Base64, CanonicalJsonObject, CanonicalJsonValue};
+use crate::serde::{Base64, CanonicalJsonObject, CanonicalJsonValue, validate_canonical_json};
 use crate::signatures::keys::{KeyPair, PublicKeyMap};
 use crate::signatures::verification::{Verified, Verifier, verifier_from_algorithm};
 use crate::signatures::{Error, JsonError, VerificationError};
@@ -458,11 +458,15 @@ pub fn content_hash(object: &CanonicalJsonObject) -> Result<Base64<Standard, [u8
 ///
 /// # Errors
 ///
-/// Returns an error if the event is too large or redaction fails.
+/// Returns an error if the event violates the room's integer bounds, is too large, or redaction
+/// fails.
 pub fn reference_hash(
     object: &CanonicalJsonObject,
     rules: &RoomVersionRules,
 ) -> Result<String, Error> {
+    if rules.authorization.strict_canonical_json {
+        validate_canonical_json(object)?;
+    }
     let redacted_value = redact(object.clone(), &rules.redaction, None)?;
 
     let json = to_canonical_json_string_with_fields_to_remove(
@@ -506,6 +510,7 @@ pub fn reference_hash(
 ///
 /// Returns an error if:
 ///
+/// * `object` contains an integer outside the Canonical JSON range.
 /// * `object` contains a field called `content` that is not a JSON object.
 /// * `object` contains a field called `hashes` that is not a JSON object.
 /// * `object` contains a field called `signatures` that is not a JSON object.
@@ -598,6 +603,7 @@ pub fn hash_and_sign_event<K>(
 where
     K: KeyPair,
 {
+    validate_canonical_json(object)?;
     let hash = content_hash(object)?;
 
     let hashes_value = object
@@ -703,6 +709,9 @@ pub fn verify_event(
     object: &CanonicalJsonObject,
     rules: &RoomVersionRules,
 ) -> Result<Verified, Error> {
+    if rules.authorization.strict_canonical_json {
+        validate_canonical_json(object)?;
+    }
     validate_pdu_size(object)?;
     let redacted = redact(object.clone(), &rules.redaction, None)?;
 

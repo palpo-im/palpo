@@ -25,6 +25,7 @@ use crate::core::events::{
 };
 use crate::core::identifiers::*;
 use crate::core::room_version_rules::RoomIdFormatVersion;
+use crate::core::serde::canonical_json::CANONICALJSON_MAX_INT;
 use crate::core::serde::{
     CanonicalJsonObject, CanonicalJsonValue, JsonObject, JsonValue, RawJson, RawJsonValue,
     default_false, to_canonical_object, to_canonical_value, validate_canonical_json,
@@ -1189,6 +1190,12 @@ pub struct PduBuilder {
     pub sticky_duration_ms: Option<StickyDurationMs>,
 }
 
+fn next_event_depth(max_prev_depth: u64) -> u64 {
+    max_prev_depth
+        .saturating_add(1)
+        .min(CANONICALJSON_MAX_INT as u64)
+}
+
 impl PduBuilder {
     pub fn state<T>(state_key: String, content: &T) -> Self
     where
@@ -1341,14 +1348,13 @@ impl PduBuilder {
         )
         .await?;
 
-        // Our depth is the maximum depth of prev_events + 1
         let mut max_depth = 0;
         for event_id in &prev_events {
             if let Ok(prev_pdu) = get_pdu(event_id).await {
                 max_depth = max_depth.max(prev_pdu.depth);
             }
         }
-        let depth = max_depth + 1;
+        let depth = next_event_depth(max_depth);
 
         if let Some(state_key) = &state_key
             && let Ok(prev_pdu) =
@@ -1587,6 +1593,23 @@ pub(crate) fn sanitize_federation_unsigned(pdu: &mut CanonicalJsonObject) {
     };
     if emptied {
         unsigned.remove("m.relations");
+    }
+}
+
+#[test]
+fn event_depth_stays_within_canonical_integer_bounds() {
+    let limit = CANONICALJSON_MAX_INT as u64;
+    for (previous, expected) in [
+        (0, 1),
+        (42, 43),
+        (limit - 1, limit),
+        (limit, limit),
+        (limit + 1, limit),
+        (u64::MAX, limit),
+    ] {
+        let depth = next_event_depth(previous);
+        assert_eq!(depth, expected);
+        assert!(to_canonical_value(depth).is_ok());
     }
 }
 

@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::serde::Base64DecodeError;
-use crate::serde::canonical_json::{JsonType, RedactionError};
+use crate::serde::canonical_json::{CanonicalJsonError, JsonType, RedactionError};
 use crate::{EventId, IdParseError, OwnedEventId, RoomVersionId};
 
 /// `palpo-signature`'s error type, wraps a number of other error types.
@@ -12,6 +12,10 @@ pub enum Error {
     /// [`JsonError`] wrapper.
     #[error("json error: {0}")]
     Json(#[from] JsonError),
+
+    /// An event contains a value outside the Canonical JSON format.
+    #[error(transparent)]
+    CanonicalJson(#[from] CanonicalJsonError),
 
     /// [`VerificationError`] wrapper.
     #[error("verification error: {0}")]

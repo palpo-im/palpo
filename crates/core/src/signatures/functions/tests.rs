@@ -4,11 +4,13 @@ use serde_json::json;
 use strass::assert_let;
 
 use super::{
-    servers_to_check_signatures, sign_json, to_canonical_json_string_for_signing,
-    verify_canonical_json_bytes, verify_event, verify_policy_server_signature,
+    hash_and_sign_event, reference_hash, servers_to_check_signatures, sign_json,
+    to_canonical_json_string_for_signing, verify_canonical_json_bytes, verify_event,
+    verify_policy_server_signature,
 };
 use crate::events::room::policy::RoomPolicyEventContent;
 use crate::room_version_rules::{RoomVersionRules, SignaturesRules};
+use crate::serde::canonical_json::{CANONICALJSON_MAX_INT, CanonicalJsonError};
 use crate::serde::{Base64, CanonicalJsonObject, CanonicalJsonValue};
 use crate::signatures::{
     Ed25519KeyPair, Error, KeyPair, PublicKeyMap, PublicKeySet, VerificationError, Verified,
@@ -41,6 +43,57 @@ fn add_invalid_key_to_map(public_key_map: &mut PublicKeyMap, name: &str, pair: &
     );
 
     sender_key_map.insert(version.to_string(), encoded_public_key);
+}
+
+#[test]
+fn event_integer_bounds_are_checked_before_redaction_and_signing() {
+    let rules = RoomVersionRules::V6;
+    let key = generate_key_pair("1");
+    let mut keys = PublicKeyMap::new();
+    add_key_to_map(&mut keys, "example.org", &key);
+    let limit = CANONICALJSON_MAX_INT;
+    let mut event: CanonicalJsonObject = serde_json::from_value(json!({
+        "type": "m.room.message", "sender": "@alice:example.org",
+        "depth": limit, "content": { "values": [[-limit, limit]] }
+    }))
+    .unwrap();
+    hash_and_sign_event("example.org", &key, &mut event, &rules.redaction).unwrap();
+    assert_eq!(verify_event(&keys, &event, &rules).unwrap(), Verified::All);
+    assert!(reference_hash(&event, &rules).is_ok());
+
+    let mut invalid_depth = event.clone();
+    invalid_depth.insert("depth".into(), (limit + 1).into());
+    assert!(matches!(
+        verify_event(&keys, &invalid_depth, &rules),
+        Err(Error::CanonicalJson(CanonicalJsonError::IntegerOutOfRange))
+    ));
+
+    for value in [limit + 1, -limit - 1] {
+        let mut invalid = event.clone();
+        invalid.insert(
+            "content".into(),
+            serde_json::from_value(json!({"values": [[value]]})).unwrap(),
+        );
+        assert!(matches!(
+            reference_hash(&invalid, &rules),
+            Err(Error::CanonicalJson(CanonicalJsonError::IntegerOutOfRange))
+        ));
+        assert!(matches!(
+            verify_event(&keys, &invalid, &rules),
+            Err(Error::CanonicalJson(CanonicalJsonError::IntegerOutOfRange))
+        ));
+        assert!(matches!(
+            hash_and_sign_event("example.org", &key, &mut invalid, &rules.redaction),
+            Err(Error::CanonicalJson(CanonicalJsonError::IntegerOutOfRange))
+        ));
+        // Earlier room versions tolerate such integers on receipt. The signature still
+        // verifies, while changing the content invalidates its hash.
+        assert!(reference_hash(&invalid, &RoomVersionRules::V5).is_ok());
+        assert_eq!(
+            verify_event(&keys, &invalid, &RoomVersionRules::V5).unwrap(),
+            Verified::Signatures
+        );
+    }
 }
 
 #[test]

@@ -189,8 +189,7 @@ async fn leave_room_remote(
     leave_event_stub.remove("event_id");
 
     // In order to create a compatible ref hash (EventID) the `hashes` field needs to be present
-    crate::server_key::hash_and_sign_event(&mut leave_event_stub, &room_version_id)
-        .expect("event is valid, we just created it");
+    crate::server_key::hash_and_sign_event(&mut leave_event_stub, &room_version_id)?;
 
     // Generate event id
     let event_id = crate::event::gen_event_id(&leave_event_stub, &room_version_id)?;

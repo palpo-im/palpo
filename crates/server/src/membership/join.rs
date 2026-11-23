@@ -203,8 +203,7 @@ pub async fn join_room(
     maybe_strip_event_id(&mut join_event_stub, &room_version);
 
     // In order to create a compatible ref hash (EventID) the `hashes` field needs to be present
-    crate::server_key::hash_and_sign_event(&mut join_event_stub, &room_version)
-        .expect("event is valid, we just created it");
+    crate::server_key::hash_and_sign_event(&mut join_event_stub, &room_version)?;
 
     // Generate event id
     let event_id = crate::event::gen_event_id(&join_event_stub, &room_version)?;
