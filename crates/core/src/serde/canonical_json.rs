@@ -17,7 +17,8 @@ pub use self::redaction::{
 pub use self::serializer::Serializer as CanonicalJsonSerializer;
 pub use self::value::{CanonicalJsonObject, CanonicalJsonValue};
 
-pub(crate) const CANONICALJSON_MAX_INT: i64 = (2i64.pow(53)) - 1;
+/// Largest integer representable in Matrix Canonical JSON.
+pub const CANONICALJSON_MAX_INT: i64 = (2i64.pow(53)) - 1;
 pub(crate) const CANONICALJSON_MIN_INT: i64 = -CANONICALJSON_MAX_INT;
 
 /// The set of possible errors when serializing to canonical JSON.
@@ -126,25 +127,20 @@ where
 }
 
 pub fn validate_canonical_json(json: &CanonicalJsonObject) -> Result<(), CanonicalJsonError> {
-    for value in json.values() {
+    fn validate_value(value: &CanonicalJsonValue) -> Result<(), CanonicalJsonError> {
         match value {
-            CanonicalJsonValue::Object(obj) => validate_canonical_json(obj)?,
-            CanonicalJsonValue::Array(arr) => {
-                for item in arr {
-                    if let CanonicalJsonValue::Object(obj) = item {
-                        validate_canonical_json(obj)?
-                    }
-                }
-            }
-            CanonicalJsonValue::Integer(value)
-                if (*value < CANONICALJSON_MIN_INT || *value > CANONICALJSON_MAX_INT) =>
+            CanonicalJsonValue::Object(obj) => validate_canonical_json(obj),
+            CanonicalJsonValue::Array(items) => items.iter().try_for_each(validate_value),
+            CanonicalJsonValue::Integer(n)
+                if !(CANONICALJSON_MIN_INT..=CANONICALJSON_MAX_INT).contains(n) =>
             {
-                return Err(CanonicalJsonError::IntegerOutOfRange);
+                Err(CanonicalJsonError::IntegerOutOfRange)
             }
-            _ => {}
+            _ => Ok(()),
         }
     }
-    Ok(())
+
+    json.values().try_for_each(validate_value)
 }
 
 #[cfg(test)]
