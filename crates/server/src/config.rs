@@ -418,7 +418,7 @@ pub fn jwt_decoding_key() -> Option<&'static jsonwebtoken::DecodingKey> {
             get()
                 .jwt
                 .as_ref()
-                .map(|jwt| jsonwebtoken::DecodingKey::from_secret(jwt.secret.as_bytes()))
+                .and_then(|jwt| jsonwebtoken::DecodingKey::from_secret(jwt.secret.as_bytes()).ok())
         })
         .as_ref()
 }

@@ -74,7 +74,7 @@ indexmap = "2.14.0"
 itertools = "0.15.0"
 # 11.0 made the crypto backend an explicit feature; aws_lc_rs is what 10.x
 # already resolved to via rustls, so this keeps the dependency tree unchanged.
-jsonwebtoken = { version = "11.0.0", default-features = false, features = [
+jsonwebtoken = { version = "12.0.0", default-features = false, features = [
     "use_pem",
     "aws_lc_rs",
 ] }
@@ -144,7 +144,7 @@ tracing-core = { version = "0.1.36" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tracing-test = "0.2.6"
-url = { version = "2.5.8", default-features = false, features = ["serde"] }
+url = { version = "2.5.9", default-features = false, features = ["serde"] }
 uuid = { version = "1.23.2", features = ["v4"] }
 ulid = "3.0.0"
 web-time = "1.1.0"
