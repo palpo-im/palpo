@@ -419,15 +419,32 @@ mod tests {
     async fn database_recovers_empty_prejoin_invite_frame_from_its_predecessor() {
         crate::test_database::init();
         let rules = room::get_version_rules(&RoomVersionId::V11).unwrap();
-        let create = store(event(
+        let pdu = |id, ty, key, content| {
+            let mut pdu = event(id, ty, key, content);
+            pdu.room_id = RoomId::parse("!prejoin-history:example.org").unwrap();
+            pdu
+        };
+        let create = store(pdu(
             "$prejoin-create",
             "m.room.create",
             Some(""),
             serde_json::json!({"creator":"@alice:example.org","room_version":"11"}),
         ))
         .await;
+        diesel::insert_into(rooms::table)
+            .values(crate::data::room::NewDbRoom {
+                id: create.room_id.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 1,
+                has_auth_chain_index: false,
+                created_at: UnixMillis(1000),
+            })
+            .execute(&mut crate::data::db())
+            .await
+            .unwrap();
         snapshot(&create, &[]).await;
-        let mut invite = event(
+        let mut invite = pdu(
             "$prejoin-invite",
             "m.room.member",
             Some("@bob:example.org"),
@@ -436,7 +453,7 @@ mod tests {
         invite.prev_events = vec![create.event_id.clone()];
         let invite = store(invite).await;
         snapshot(&invite, &[]).await;
-        let mut message = event(
+        let mut message = pdu(
             "$prejoin-message",
             "m.room.encrypted",
             None,
