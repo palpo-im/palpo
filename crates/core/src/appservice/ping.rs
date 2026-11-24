@@ -1,9 +1,4 @@
-//! Endpoint for pinging the application service.
-
-//! `PUT /_matrix/app/*/ping`
-//!
-//! Endpoint to ping the application service.
-//! `/v1/` ([spec])
+//! `POST /_matrix/app/v1/ping` ([spec]).
 //!
 //! [spec]: https://spec.matrix.org/latest/application-service-api/#post_matrixappv1ping
 use std::time::Duration;
@@ -13,20 +8,14 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::OwnedTransactionId;
-use crate::sending::{SendRequest, SendResult};
-
-// const METADATA: Metadata = metadata! {
-//     method: POST,
-//     rate_limited: false,
-//     authentication: AccessToken,
-//     history: {
-//         unstable => "/_matrix/app/unstable/fi.mau.msc2659/ping",
-//         1.7 => "/_matrix/app/v1/ping",
-//     }
-// };
+use crate::sending::{SendError, SendRequest, SendResult};
 
 pub fn send_ping_request(dest: &str, body: SendPingReqBody) -> SendResult<SendRequest> {
-    let url = Url::parse(dest)?;
+    let mut url = Url::parse(dest)?;
+    url.path_segments_mut()
+        .map_err(|()| SendError::other("appservice URL cannot be used as a base URL"))?
+        .pop_if_empty()
+        .extend(["_matrix", "app", "v1", "ping"]);
     crate::sending::post(url).stuff(body)
 }
 
@@ -51,5 +40,57 @@ pub struct SendPingResBody {
 impl SendPingResBody {
     pub fn new(duration: Duration) -> Self {
         Self { duration }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use salvo::conn::Acceptor;
+    use salvo::prelude::*;
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    #[handler]
+    fn bridge(req: &mut Request) -> Json<Value> {
+        Json(json!({"method": req.method().as_str(), "path": req.uri().path()}))
+    }
+
+    #[tokio::test]
+    async fn ping_request_targets_appservice_endpoint() {
+        let listener = TcpListener::new("127.0.0.1:0").bind().await;
+        let address = listener.holdings()[0]
+            .local_addr
+            .clone()
+            .into_std()
+            .unwrap();
+        let peer =
+            tokio::spawn(Server::new(listener).serve(Router::with_path("{*path}").goal(bridge)));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        for (prefix, expected_path) in [
+            ("", "/_matrix/app/v1/ping"),
+            ("/", "/_matrix/app/v1/ping"),
+            ("/relay", "/relay/_matrix/app/v1/ping"),
+            ("/relay/", "/relay/_matrix/app/v1/ping"),
+        ] {
+            let request = send_ping_request(
+                &format!("http://{address}{prefix}"),
+                SendPingReqBody {
+                    transaction_id: None,
+                },
+            )
+            .unwrap();
+            let received = request
+                .send_by_client::<Value>(client.clone())
+                .await
+                .unwrap();
+            assert_eq!(received, json!({"method": "POST", "path": expected_path}));
+        }
+        peer.abort();
     }
 }
