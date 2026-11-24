@@ -219,8 +219,8 @@ fn resolve_state_at_incoming_impl<'a>(
                 return Ok(None);
             };
 
-            let mut leaf_state = match state::get_pdu_before_frame_id(prev_event_id).await {
-                Ok(frame_id) => state::get_full_state_ids(frame_id).await?,
+            let stored_state = match state::get_pdu_before_frame_id(prev_event_id).await {
+                Ok(frame_id) => Some(state::get_full_state_ids(frame_id).await?),
                 Err(e)
                     if e.is_not_found()
                         && prev_event.state_key.is_none()
@@ -231,22 +231,31 @@ fn resolve_state_at_incoming_impl<'a>(
                         Err(e) if e.is_not_found() => return Ok(None),
                         Err(e) => return Err(e),
                     };
-                    state::get_full_state_ids(frame_id).await?
+                    Some(state::get_full_state_ids(frame_id).await?)
                 }
-                Err(e) if e.is_not_found() => {
-                    let Some(state_before_prev) = resolve_state_at_incoming_inner(
-                        &prev_event,
-                        version_rules,
-                        resolving,
-                        remaining_events,
-                    )
-                    .await?
-                    else {
-                        return Ok(None);
-                    };
-                    state_before_prev
-                }
+                Err(e) if e.is_not_found() => None,
                 Err(e) => return Err(e),
+            };
+
+            // An invite received before this server joined can have an empty
+            // state-before frame. Only a root event can legitimately start
+            // with empty state. Retry its historical predecessors after backfill.
+            let mut leaf_state = if let Some(stored) =
+                stored_state.filter(|state| !state.is_empty() || prev_event.prev_events.is_empty())
+            {
+                stored
+            } else {
+                let Some(recovered) = resolve_state_at_incoming_inner(
+                    &prev_event,
+                    version_rules,
+                    resolving,
+                    remaining_events,
+                )
+                .await?
+                else {
+                    return Ok(None);
+                };
+                recovered
             };
 
             // A rejected event leaves its predecessor state unchanged. Retain that
@@ -403,6 +412,66 @@ mod tests {
         state::set_event_state_before(&target.event_id, &target.room_id, Arc::new(compressed))
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_recovers_empty_prejoin_invite_frame_from_its_predecessor() {
+        crate::test_database::init();
+        let rules = room::get_version_rules(&RoomVersionId::V11).unwrap();
+        let pdu = |id, ty, key, content| {
+            let mut pdu = event(id, ty, key, content);
+            pdu.room_id = RoomId::parse("!prejoin-history:example.org").unwrap();
+            pdu
+        };
+        let create = store(pdu(
+            "$prejoin-create",
+            "m.room.create",
+            Some(""),
+            serde_json::json!({"creator":"@alice:example.org","room_version":"11"}),
+        ))
+        .await;
+        diesel::insert_into(rooms::table)
+            .values(crate::data::room::NewDbRoom {
+                id: create.room_id.clone(),
+                version: "11".into(),
+                is_public: false,
+                min_depth: 1,
+                has_auth_chain_index: false,
+                created_at: UnixMillis(1000),
+            })
+            .execute(&mut crate::data::db())
+            .await
+            .unwrap();
+        snapshot(&create, &[]).await;
+        let mut invite = pdu(
+            "$prejoin-invite",
+            "m.room.member",
+            Some("@bob:example.org"),
+            serde_json::json!({"membership":"invite"}),
+        );
+        invite.prev_events = vec![create.event_id.clone()];
+        let invite = store(invite).await;
+        snapshot(&invite, &[]).await;
+        let mut message = pdu(
+            "$prejoin-message",
+            "m.room.encrypted",
+            None,
+            serde_json::json!({}),
+        );
+        message.prev_events = vec![invite.event_id.clone()];
+        let recovered = resolve_state_at_incoming(&message, &rules)
+            .await
+            .unwrap()
+            .unwrap();
+        let create_field = state::ensure_field_id(&StateEventType::RoomCreate, "")
+            .await
+            .unwrap();
+        assert_eq!(recovered.get(&create_field), Some(&create.event_id));
+        let member_field = state::ensure_field_id(&StateEventType::RoomMember, "@bob:example.org")
+            .await
+            .unwrap();
+        assert_eq!(recovered.get(&member_field), Some(&invite.event_id));
     }
 
     #[tokio::test]
